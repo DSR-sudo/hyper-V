@@ -185,6 +185,11 @@
     <ClCompile Include="src\slat\cr3\deep_copy.cpp" />
     <ClCompile Include="src\slat\cr3\pte.cpp" />
     <ClCompile Include="src\slat\violation\violation.cpp" />
+    <ClCompile Include="src\loader\cookie.cpp" />
+    <ClCompile Include="src\loader\deployer.cpp" />
+    <ClCompile Include="src\loader\guest.cpp" />
+    <ClCompile Include="src\loader\imports.cpp" />
+    <ClCompile Include="src\loader\reloc.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\apic\apic.h" />
@@ -210,6 +215,14 @@
     <ClInclude Include="src\slat\cr3\pte.h" />
     <ClInclude Include="src\slat\violation\violation.h" />
     <ClInclude Include="src\structures\virtual_address.h" />
+    <ClInclude Include="src\loader\cookie.h" />
+    <ClInclude Include="src\loader\deployer.h" />
+    <ClInclude Include="src\loader\guest.h" />
+    <ClInclude Include="src\loader\imports.h" />
+    <ClInclude Include="src\loader\loader.h" />
+    <ClInclude Include="src\loader\pe.h" />
+    <ClInclude Include="src\loader\reloc.h" />
+    <ClInclude Include="..\shared\payload\payload_bin.h" />
   </ItemGroup>
   <ItemGroup>
     <MASM Include="src\interrupts\interrupt_entry.asm" />
