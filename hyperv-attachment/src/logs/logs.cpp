@@ -4,6 +4,7 @@
 #include "../crt/crt.h"
 #include <cstdarg>
 #include <cstdint>
+#include <intrin.h>
 
 namespace
 {
@@ -54,7 +55,22 @@ void logs::print(const char* format, ...)
 	va_list args;
 	va_start(args, format);
 
-	text_log_mutex.lock();
+	bool locked = false;
+	for (int retry = 0; retry < 100; retry++)
+	{
+		if (text_log_mutex.try_lock())
+		{
+			locked = true;
+			break;
+		}
+		_mm_pause();
+	}
+
+	if (!locked)
+	{
+		va_end(args);
+		return;
+	}
 
 	while (*format)
 	{
@@ -137,14 +153,26 @@ std::uint64_t logs::flush_to_guest(const cr3 slat_cr3, const std::uint64_t guest
 	text_log_mutex.lock();
 
 	const std::uint32_t current_index = g_text_log_index;
+	if (current_index == 0)
+	{
+		text_log_mutex.release();
+		return 0;
+	}
+
 	const std::uint32_t copy_size = static_cast<std::uint32_t>(crt::min(buffer_size, static_cast<std::uint64_t>(current_index)));
 
 	const std::uint64_t bytes_written = memory_manager::operate_on_guest_virtual_memory(slat_cr3, g_text_log_buffer, guest_virtual_buffer, guest_cr3, copy_size, memory_operation_t::write_operation);
 
-	// Reset index after flush (or keep it if we want persistent logs? 
-	// The prompt says "将文本缓冲区内容拷贝至 Guest 内存", usually we reset it)
-	g_text_log_index = 0;
-	crt::set_memory(g_text_log_buffer, 0, sizeof(g_text_log_buffer));
+	if (bytes_written > 0)
+	{
+		const std::uint32_t remaining = current_index - static_cast<std::uint32_t>(bytes_written);
+		if (remaining > 0)
+		{
+			crt::copy_memory(g_text_log_buffer, g_text_log_buffer + bytes_written, remaining);
+		}
+		g_text_log_index = remaining;
+		crt::set_memory(g_text_log_buffer + remaining, 0, sizeof(g_text_log_buffer) - remaining);
+	}
 
 	text_log_mutex.release();
 

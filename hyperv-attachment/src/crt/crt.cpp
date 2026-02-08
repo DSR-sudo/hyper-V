@@ -19,6 +19,11 @@ void crt::mutex_t::lock()
 	}
 }
 
+bool crt::mutex_t::try_lock()
+{
+	return _InterlockedCompareExchange64(&value_, 1, 0) == 0;
+}
+
 void crt::mutex_t::release()
 {
 	_InterlockedExchange64(&value_, 0);

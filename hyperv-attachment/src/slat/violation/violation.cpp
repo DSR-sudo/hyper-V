@@ -16,23 +16,53 @@ std::uint8_t slat::violation::process()
     const std::uint64_t physical_address = arch::get_guest_physical_address();
     const hook::entry_t* const hook_entry = hook::entry_t::find(physical_address >> 12);
 
+    // [Logic A] TLB Self-Healing: If stale violation detected (hook no longer exists)
     if (hook_entry == nullptr)
     {
-        if (qualification.execute_access)
+        // Immediately flush local core TLB and switch back to Stealth view to break infinite loop
+        if (get_cr3().flags != hyperv_cr3().flags)
         {
             set_cr3(hyperv_cr3());
+        }
+        else
+        {
+            // If already in hyperv_cr3 but still triggering Violation, TLB is definitely stale
+            flush_current_logical_processor_cache();
         }
         return 0;
     }
 
     if (qualification.execute_access)
     {
-        set_cr3(hyperv_cr3());
+        const cr3 hv_cr3 = hyperv_cr3();
+        if (get_cr3().flags != hv_cr3.flags)
+        {
+            set_cr3(hv_cr3);
+        }
     }
     else
     {
-        set_cr3(hook_cr3());
+        const cr3 target_hook_cr3 = hook_cr3();
+        if (get_cr3().flags != target_hook_cr3.flags)
+        {
+            set_cr3(target_hook_cr3);
+        }
+
+        // [Logic B] Single-Page Exposure: Enable MTF to trace back immediately after instruction execution
+        arch::enable_mtf();
     }
 
     return 1;
+}
+
+void slat::violation::handle_mtf()
+{
+    // [Logic C] MTF Callback: Switch back to Stealth view and disable MTF once instruction succeeds
+    const cr3 hv_cr3 = hyperv_cr3();
+    if (get_cr3().flags != hv_cr3.flags)
+    {
+        set_cr3(hv_cr3);
+    }
+
+    arch::disable_mtf();
 }

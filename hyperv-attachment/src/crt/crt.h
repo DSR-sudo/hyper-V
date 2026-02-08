@@ -37,6 +37,7 @@ namespace crt
 	{
 	public:
 		void lock();
+		bool try_lock();
 		void release();
 
 	protected:

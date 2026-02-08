@@ -17,6 +17,8 @@ std::int32_t main()
         return 1;
     }
 
+    std::println("[Info] Hyper-reV Client started. Entering silent command loop.");
+
 	while (true)
 	{
 		std::print("> ");

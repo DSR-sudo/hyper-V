@@ -17,6 +17,10 @@ namespace arch
 	cr3 get_slat_cr3();
 	void set_slat_cr3(cr3 slat_cr3);
 
+	void enable_mtf();
+	void disable_mtf();
+	std::uint8_t is_mtf_exit(std::uint64_t vmexit_reason);
+
 	std::uint64_t get_guest_rsp();
 	void set_guest_rsp(std::uint64_t guest_rsp);
 

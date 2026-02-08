@@ -10,6 +10,7 @@ namespace slat
 	cr3 get_cr3();
 	void set_cr3(cr3 slat_cr3);
 
+	void invept_single_context(cr3 slat_cr3);
 	void flush_current_logical_processor_cache(std::uint8_t has_slat_cr3_changed = 0);
 	void flush_all_logical_processors_cache();
 

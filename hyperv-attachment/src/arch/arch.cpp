@@ -72,6 +72,25 @@ void arch::set_slat_cr3(const cr3 slat_cr3)
     vmwrite(VMCS_CTRL_EPT_POINTER, slat_cr3.flags);
 }
 
+void arch::enable_mtf()
+{
+    std::uint64_t controls = vmread(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS);
+    controls |= (1ULL << 27); // Monitor Trap Flag (MTF)
+    vmwrite(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, controls);
+}
+
+void arch::disable_mtf()
+{
+    std::uint64_t controls = vmread(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS);
+    controls &= ~(1ULL << 27);
+    vmwrite(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, controls);
+}
+
+std::uint8_t arch::is_mtf_exit(const std::uint64_t vmexit_reason)
+{
+    return vmexit_reason == VMX_EXIT_REASON_MONITOR_TRAP_FLAG;
+}
+
 std::uint64_t arch::get_guest_rsp() { return vmread(VMCS_GUEST_RSP); }
 void arch::set_guest_rsp(const std::uint64_t guest_rsp) { vmwrite(VMCS_GUEST_RSP, guest_rsp); }
 

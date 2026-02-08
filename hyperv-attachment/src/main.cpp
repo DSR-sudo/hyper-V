@@ -21,6 +21,13 @@ namespace
     std::uint8_t* original_vmexit_handler = nullptr;
     std::uint64_t uefi_boot_physical_base_address = 0;
     std::uint64_t uefi_boot_image_size = 0;
+
+    std::uint64_t g_image_base = 0;
+    std::uint64_t g_image_size = 0;
+    std::uint64_t g_text_start = 0;
+    std::uint64_t g_text_end = 0;
+    std::uint64_t g_data_start = 0;
+    std::uint64_t g_data_end = 0;
 }
 
 void clean_up_uefi_boot_image()
@@ -38,9 +45,7 @@ void process_first_vmexit()
         logs::print("[Runtime] First VMExit captured. Taking control...\n");
         slat::process_first_vmexit();
         interrupts::set_up();
-        logs::print("[Runtime] Interrupts and IDT set up.\n");
         clean_up_uefi_boot_image();
-        logs::print("[Runtime] UEFI boot image wiped from memory.\n");
         is_first_vmexit = 0;
     }
 
@@ -92,9 +97,71 @@ std::uint64_t vmexit_handler_detour(const std::uint64_t a1, const std::uint64_t 
     {
         interrupts::process_nmi();
     }
+    else if (arch::is_mtf_exit(exit_reason) == 1)
+    {
+        slat::violation::handle_mtf();
+        return do_vmexit_premature_return();
+    }
 
     return reinterpret_cast<vmexit_handler_t>(original_vmexit_handler)(a1, a2, a3, a4);
 }
+
+#pragma pack(push, 1)
+struct image_dos_header {
+    std::uint16_t e_magic;
+    std::uint8_t  _pad[58];
+    std::int32_t  e_lfanew;
+};
+
+struct image_file_header {
+    std::uint16_t machine;
+    std::uint16_t number_of_sections;
+    std::uint32_t time_date_stamp;
+    std::uint32_t pointer_to_symbol_table;
+    std::uint32_t number_of_symbols;
+    std::uint16_t size_of_optional_header;
+    std::uint16_t characteristics;
+};
+
+struct image_data_directory {
+    std::uint32_t virtual_address;
+    std::uint32_t size;
+};
+
+struct image_optional_header64 {
+    std::uint16_t magic;
+    std::uint8_t  _pad1[66];
+    std::uint64_t image_base;
+    std::uint32_t section_alignment;
+    std::uint32_t file_alignment;
+    std::uint8_t  _pad2[46];
+    std::uint32_t size_of_image;
+    std::uint32_t size_of_headers;
+    std::uint32_t check_sum;
+    std::uint8_t  _pad3[10];
+    std::uint32_t number_of_rva_and_sizes;
+    image_data_directory data_directory[16];
+};
+
+struct image_nt_headers64 {
+    std::uint32_t signature;
+    image_file_header file_header;
+    image_optional_header64 optional_header;
+};
+
+struct image_section_header {
+    std::uint8_t  name[8];
+    std::uint32_t virtual_size;
+    std::uint32_t virtual_address;
+    std::uint32_t size_of_raw_data;
+    std::uint32_t pointer_to_raw_data;
+    std::uint32_t pointer_to_relocations;
+    std::uint32_t pointer_to_linenumbers;
+    std::uint16_t number_of_relocations;
+    std::uint16_t number_of_linenumbers;
+    std::uint32_t characteristics;
+};
+#pragma pack(pop)
 
 void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* const original_vmexit_handler_routine, const std::uint64_t heap_physical_base, const std::uint64_t heap_physical_usable_base, const std::uint64_t heap_total_size, const std::uint64_t _uefi_boot_physical_base_address, const std::uint32_t _uefi_boot_image_size, const std::uint64_t reserved_one)
 {
@@ -115,9 +182,64 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
     heap_manager::set_up(mapped_heap_usable_base, heap_usable_size);
 
     logs::set_up();
-    logs::print("[Init] Hyper-reV Entry Point reached.\n");
-    logs::print("[Init] Heap Physical Base: 0x%p, Size: 0x%p\n", heap_physical_base, heap_total_size);
-    logs::print("[Init] UEFI Boot Physical Base: 0x%p, Size: 0x%x\n", _uefi_boot_physical_base_address, _uefi_boot_image_size);
+
+    // [ARCHITECT Phase 2] PE Parsing & Boundary Locking
+    const auto image_base = static_cast<std::uint8_t*>(memory_manager::map_host_physical(heap_physical_base));
+    const auto dos_header = reinterpret_cast<image_dos_header*>(image_base);
+
+    if (dos_header->e_magic == 0x5A4D)
+    {
+        const auto nt_headers = reinterpret_cast<image_nt_headers64*>(image_base + dos_header->e_lfanew);
+        if (nt_headers->signature == 0x00004550)
+        {
+            g_image_base = heap_physical_base;
+            g_image_size = nt_headers->optional_header.size_of_image;
+            
+            auto section_header = reinterpret_cast<image_section_header*>(reinterpret_cast<std::uint8_t*>(&nt_headers->optional_header) + nt_headers->file_header.size_of_optional_header);
+
+            logs::print("[Init] Hyper-reV Entry Point reached.\n");
+            logs::print("[Init] Heap Physical Base: 0x%p, Size: 0x%p\n", heap_physical_base, heap_total_size);
+            logs::print("[Init] UEFI Boot Physical Base: 0x%p, Size: 0x%x\n", _uefi_boot_physical_base_address, _uefi_boot_image_size);
+            
+            logs::print("[Stealth] PE Image Base: 0x%p\n", g_image_base);
+            logs::print("[Stealth] Full Image Range: 0x%p - 0x%p\n", g_image_base, g_image_base + g_image_size);
+
+            for (std::uint32_t i = 0; i < nt_headers->file_header.number_of_sections; i++)
+            {
+                const auto& section = section_header[i];
+                char section_name[9] = { 0 };
+                crt::copy_memory(section_name, section.name, 8);
+
+                logs::print("[Stealth] Section [%s]: 0x%p - 0x%p\n", 
+                    section_name, 
+                    heap_physical_base + section.virtual_address, 
+                    heap_physical_base + section.virtual_address + section.virtual_size);
+
+                if (crt::abs(static_cast<std::int32_t>(section.name[0] - '.')) == 0 && 
+                    crt::abs(static_cast<std::int32_t>(section.name[1] - 't')) == 0 && 
+                    crt::abs(static_cast<std::int32_t>(section.name[2] - 'e')) == 0 && 
+                    crt::abs(static_cast<std::int32_t>(section.name[3] - 'x')) == 0 && 
+                    crt::abs(static_cast<std::int32_t>(section.name[4] - 't')) == 0)
+                {
+                    g_text_start = heap_physical_base + section.virtual_address;
+                    g_text_end = g_text_start + section.virtual_size;
+                }
+                else if (crt::abs(static_cast<std::int32_t>(section.name[0] - '.')) == 0 && 
+                         crt::abs(static_cast<std::int32_t>(section.name[1] - 'd')) == 0 && 
+                         crt::abs(static_cast<std::int32_t>(section.name[2] - 'a')) == 0 && 
+                         crt::abs(static_cast<std::int32_t>(section.name[3] - 't')) == 0 && 
+                         crt::abs(static_cast<std::int32_t>(section.name[4] - 'a')) == 0)
+                {
+                    g_data_start = heap_physical_base + section.virtual_address;
+                    g_data_end = g_data_start + section.virtual_size;
+                }
+            }
+        }
+    }
+    else
+    {
+        logs::print("[WARNING] PE Parsing failed! Image base not found.\n");
+    }
 
     slat::set_up();
     logs::print("[Init] Component setup complete (Logs, SLAT).\n");

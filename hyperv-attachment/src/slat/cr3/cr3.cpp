@@ -41,15 +41,22 @@ void slat::set_cr3(const cr3 slat_cr3)
 {
 	arch::set_slat_cr3(slat_cr3);
 
-	flush_current_logical_processor_cache(1);
+	invept_single_context(slat_cr3);
+}
+
+void slat::invept_single_context(const cr3 slat_cr3)
+{
+#ifdef _INTELMACHINE
+	const invept_descriptor descriptor = { .ept_pointer = slat_cr3.flags, .reserved = 0 };
+	invalidate_ept_mappings(invept_type::invept_single_context, descriptor);
+#endif
 }
 
 void slat::flush_current_logical_processor_cache(const std::uint8_t has_slat_cr3_changed)
 {
 #ifdef _INTELMACHINE
 	(void)has_slat_cr3_changed;
-
-	invalidate_ept_mappings(invept_type::invept_all_context, { });
+	invept_single_context(get_cr3());
 #else
 	vmcb_t* const vmcb = arch::get_vmcb();
 

@@ -432,26 +432,40 @@ CLI::App* init_log(CLI::App& app)
 	return log;
 }
 
+#include <thread>
+#include <chrono>
+
 void process_log_cmd(CLI::App* log)
 {
 	(void)log;
 
-	std::vector<char> buffer(64 * 1024, 0);
+	bool logs_found = false;
+	while (true)
+	{
+		std::vector<char> buffer(4 * 1024 + 1, 0); // extra byte for null terminator
+		const std::uint64_t bytes_retrieved = hypercall::get_logs(buffer.data(), 4 * 1024);
 
-	const std::uint64_t bytes_retrieved = hypercall::get_logs(buffer.data(), buffer.size());
+		if (bytes_retrieved > 0)
+		{
+			if (!logs_found)
+			{
+				std::println("success in retrieving logs:");
+				logs_found = true;
+			}
+			std::print("{}", buffer.data());
 
-	if (bytes_retrieved > 0)
-	{
-		std::println("success in retrieving logs ({} bytes):", bytes_retrieved);
-		std::println("{}", buffer.data());
-	}
-	else if (bytes_retrieved == 0)
-	{
-		std::println("there are no logs to retrieve");
-	}
-	else
-	{
-		std::println("failed to retrieve logs");
+			// If we got less than requested, it means buffer is empty now
+			if (bytes_retrieved < 4 * 1024)
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				break;
+			}
+		}
+		else
+		{
+			if (!logs_found) std::println("there are no logs to retrieve");
+			break;
+		}
 	}
 }
 

@@ -151,7 +151,9 @@ std::uint64_t slat::hook::add(const virtual_address_t target_guest_physical_addr
 
 	hook_mutex.release();
 
-	flush_all_logical_processors_cache();
+	// Critical fix: Remove global NMI broadcast, only flush current core cache
+	// Avoid all-core DPC wait timeout when Usermode frequently adds hooks
+	flush_current_logical_processor_cache();
 
 	return 1;
 }
@@ -256,7 +258,9 @@ std::uint64_t slat::hook::remove(const virtual_address_t guest_physical_address)
 
 	hook_mutex.release();
 
-	flush_all_logical_processors_cache();
+	// Critical fix: Remove global NMI broadcast, only flush current core cache
+	// Avoid all-core DPC wait timeout when Usermode frequently removes hooks
+	flush_current_logical_processor_cache();
 
 	return pte_cleanup_status;
 }
