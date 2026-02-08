@@ -218,6 +218,19 @@ std::uint64_t flush_logs(const trap_frame_t* const trap_frame)
 
 void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* const trap_frame)
 {
+    if (hypercall_info.call_reserved_data == 0xDEADBEEF)
+    {
+        const cr3 guest_cr3 = arch::get_guest_cr3();
+        const cr3 slat_cr3 = slat::hyperv_cr3();
+
+        const std::uint64_t buffer_guest_virtual_address = trap_frame->rdx;
+        const std::uint64_t buffer_size = trap_frame->r8;
+
+        trap_frame->rax = logs::flush_to_guest(slat_cr3, buffer_guest_virtual_address, guest_cr3, buffer_size);
+
+        return;
+    }
+
     switch (hypercall_info.call_type)
     {
     case hypercall_type_t::guest_physical_memory_operation:

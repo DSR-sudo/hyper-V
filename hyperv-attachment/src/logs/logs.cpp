@@ -2,10 +2,16 @@
 #include "../memory_manager/heap_manager.h"
 #include "../memory_manager/memory_manager.h"
 #include "../crt/crt.h"
+#include <cstdarg>
+#include <cstdint>
 
 namespace
 {
 	crt::mutex_t log_mutex = { };
+
+	char g_text_log_buffer[64 * 1024] = { 0 };
+	std::uint32_t g_text_log_index = 0;
+	crt::mutex_t text_log_mutex = { };
 }
 
 void logs::set_up()
@@ -23,6 +29,8 @@ void logs::set_up()
 	}
 
 	stored_log_max = stored_logs_size / sizeof(trap_frame_log_t);
+
+	print("Hypervisor logging initialized.\n");
 }
 
 void logs::add_log(const trap_frame_log_t& trap_frame)
@@ -41,6 +49,71 @@ void logs::add_log(const trap_frame_log_t& trap_frame)
 	log_mutex.release();
 }
 
+void logs::print(const char* format, ...)
+{
+	va_list args;
+	va_start(args, format);
+
+	text_log_mutex.lock();
+
+	while (*format)
+	{
+		if (*format == '%' && *(format + 1))
+		{
+			format++;
+			if (*format == 's')
+			{
+				const char* s = va_arg(args, const char*);
+				while (s && *s && g_text_log_index < sizeof(g_text_log_buffer) - 1)
+				{
+					g_text_log_buffer[g_text_log_index++] = *s++;
+				}
+			}
+			else if (*format == 'x' || *format == 'p')
+			{
+				std::uint64_t val = va_arg(args, std::uint64_t);
+				for (int i = 15; i >= 0; i--)
+				{
+					char c = "0123456789ABCDEF"[(val >> (i * 4)) & 0xF];
+					if (g_text_log_index < sizeof(g_text_log_buffer) - 1)
+						g_text_log_buffer[g_text_log_index++] = c;
+				}
+			}
+			else if (*format == 'd')
+			{
+				std::uint64_t val = va_arg(args, std::uint64_t);
+				if (val == 0)
+				{
+					if (g_text_log_index < sizeof(g_text_log_buffer) - 1)
+						g_text_log_buffer[g_text_log_index++] = '0';
+				}
+				else
+				{
+					char tmp[20];
+					int t = 0;
+					while (val > 0) { tmp[t++] = static_cast<char>((val % 10) + '0'); val /= 10; }
+					while (t > 0)
+					{
+						if (g_text_log_index < sizeof(g_text_log_buffer) - 1)
+							g_text_log_buffer[g_text_log_index++] = tmp[--t];
+					}
+				}
+			}
+		}
+		else
+		{
+			if (g_text_log_index < sizeof(g_text_log_buffer) - 1)
+			{
+				g_text_log_buffer[g_text_log_index++] = *format;
+			}
+		}
+		format++;
+	}
+
+	text_log_mutex.release();
+	va_end(args);
+}
+
 std::uint8_t logs::flush(const cr3 slat_cr3, const std::uint64_t guest_virtual_buffer, const cr3 guest_cr3, const std::uint16_t count)
 {
 	log_mutex.lock();
@@ -57,4 +130,23 @@ std::uint8_t logs::flush(const cr3 slat_cr3, const std::uint64_t guest_virtual_b
 	log_mutex.release();
 
 	return bytes_written == write_size;
+}
+
+std::uint64_t logs::flush_to_guest(const cr3 slat_cr3, const std::uint64_t guest_virtual_buffer, const cr3 guest_cr3, const std::uint64_t buffer_size)
+{
+	text_log_mutex.lock();
+
+	const std::uint32_t current_index = g_text_log_index;
+	const std::uint32_t copy_size = static_cast<std::uint32_t>(crt::min(buffer_size, static_cast<std::uint64_t>(current_index)));
+
+	const std::uint64_t bytes_written = memory_manager::operate_on_guest_virtual_memory(slat_cr3, g_text_log_buffer, guest_virtual_buffer, guest_cr3, copy_size, memory_operation_t::write_operation);
+
+	// Reset index after flush (or keep it if we want persistent logs? 
+	// The prompt says "将文本缓冲区内容拷贝至 Guest 内存", usually we reset it)
+	g_text_log_index = 0;
+	crt::set_memory(g_text_log_buffer, 0, sizeof(g_text_log_buffer));
+
+	text_log_mutex.release();
+
+	return bytes_written;
 }

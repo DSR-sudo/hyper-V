@@ -115,3 +115,7 @@ std::uint64_t hypercall::get_heap_free_page_count()
 
 	return make_hypercall(call_type, 0, 0, 0, 0);
 }
+std::uint64_t hypercall::get_logs(char* buffer, std::uint64_t size)
+{
+	return make_hypercall(hypercall_type_t::get_logs, 0xDEADBEEF, reinterpret_cast<std::uint64_t>(buffer), size, 0);
+}

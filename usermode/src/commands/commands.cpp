@@ -425,6 +425,36 @@ void process_hfpc(CLI::App* hfpc)
 	std::println("heap free page count: {}", heap_free_page_count);
 }
 
+CLI::App* init_log(CLI::App& app)
+{
+	CLI::App* log = app.add_subcommand("log", "pull and print text logs from hypervisor-attachment")->ignore_case();
+
+	return log;
+}
+
+void process_log_cmd(CLI::App* log)
+{
+	(void)log;
+
+	std::vector<char> buffer(64 * 1024, 0);
+
+	const std::uint64_t bytes_retrieved = hypercall::get_logs(buffer.data(), buffer.size());
+
+	if (bytes_retrieved > 0)
+	{
+		std::println("success in retrieving logs ({} bytes):", bytes_retrieved);
+		std::println("{}", buffer.data());
+	}
+	else if (bytes_retrieved == 0)
+	{
+		std::println("there are no logs to retrieve");
+	}
+	else
+	{
+		std::println("failed to retrieve logs");
+	}
+}
+
 CLI::App* init_lkm(CLI::App& app)
 {
 	CLI::App* lkm = app.add_subcommand("lkm", "print list of loaded kernel modules")->ignore_case();
@@ -563,6 +593,7 @@ void commands::process(const std::string command)
 	CLI::App* hgpp = init_hgpp(app, aliases_transformer);
 	CLI::App* fl = init_fl(app);
 	CLI::App* hfpc = init_hfpc(app);
+	CLI::App* log_cmd = init_log(app);
 	CLI::App* lkm = init_lkm(app);
 	CLI::App* kme = init_kme(app);
 	CLI::App* dkm = init_dkm(app);
@@ -584,6 +615,7 @@ void commands::process(const std::string command)
 		d_process_command(hgpp);
 		d_process_command(fl);
 		d_process_command(hfpc);
+		d_process_command(log_cmd);
 		d_process_command(lkm);
 		d_process_command(kme);
 		d_process_command(dkm);

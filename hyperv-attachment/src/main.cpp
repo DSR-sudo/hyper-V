@@ -35,18 +35,26 @@ void process_first_vmexit()
 
     if (is_first_vmexit == 1)
     {
+        logs::print("[Runtime] First VMExit captured. Taking control...\n");
         slat::process_first_vmexit();
         interrupts::set_up();
+        logs::print("[Runtime] Interrupts and IDT set up.\n");
         clean_up_uefi_boot_image();
+        logs::print("[Runtime] UEFI boot image wiped from memory.\n");
         is_first_vmexit = 0;
     }
 
     static std::uint8_t has_hidden_heap_pages = 0;
     static std::uint64_t vmexit_count = 0;
 
-    if (has_hidden_heap_pages == 0 && 10000 <= ++vmexit_count)
+    if (has_hidden_heap_pages == 0 && 2000000 <= ++vmexit_count)
     {
         has_hidden_heap_pages = slat::hide_heap_pages(slat::hyperv_cr3());
+
+        if (has_hidden_heap_pages == 1)
+        {
+            logs::print("[Runtime] Heap memory hiding complete (Total 2M VMExits threshold met).\n");
+        }
     }
 }
 
@@ -107,5 +115,10 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
     heap_manager::set_up(mapped_heap_usable_base, heap_usable_size);
 
     logs::set_up();
+    logs::print("[Init] Hyper-reV Entry Point reached.\n");
+    logs::print("[Init] Heap Physical Base: 0x%p, Size: 0x%p\n", heap_physical_base, heap_total_size);
+    logs::print("[Init] UEFI Boot Physical Base: 0x%p, Size: 0x%x\n", _uefi_boot_physical_base_address, _uefi_boot_image_size);
+
     slat::set_up();
+    logs::print("[Init] Component setup complete (Logs, SLAT).\n");
 }
