@@ -46,16 +46,40 @@ std::uint8_t slat::hide_heap_pages(const cr3 slat_cr3)
 	const std::uint64_t heap_physical_address = heap_manager::initial_physical_base;
 	const std::uint64_t heap_physical_end = heap_physical_address + heap_manager::initial_size;
 
-	std::uint64_t current_physical_address = heap_physical_address;
+	// [ARCHITECT FIX] Time-Slicing Implementation
+	// Use static variables to maintain state across multiple VMExits
+	static std::uint64_t current_physical_address = 0;
+	static bool initialized = false;
 
-	while (current_physical_address < heap_physical_end)
+	if (!initialized)
 	{
+		current_physical_address = heap_physical_address;
+		initialized = true;
+	}
+
+	// Process a small batch to keep DPC latency low
+	// 32 pages * 4KB = 128KB per VMExit. Safe for DPC limits.
+	const std::uint64_t BATCH_LIMIT = 32;
+	std::uint64_t pages_processed = 0;
+
+	while (current_physical_address < heap_physical_end && pages_processed < BATCH_LIMIT)
+	{
+		// Use existing logic to hide page (maps to dummy page)
 		hide_physical_page_from_guest(slat_cr3, { .address = current_physical_address });
 
 		current_physical_address += 0x1000;
+		pages_processed++;
 	}
 
-	return 1;
+	// Return 1 only when ALL pages are hidden
+	if (current_physical_address >= heap_physical_end)
+	{
+		initialized = false; // Reset for potential future use or re-init
+		return 1;
+	}
+
+	// Return 0 to indicate "Work in Progress"
+	return 0;
 }
 
 std::uint64_t slat::hide_physical_page_from_guest(const cr3 slat_cr3, const virtual_address_t guest_physical_address)
