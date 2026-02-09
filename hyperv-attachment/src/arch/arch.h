@@ -29,6 +29,9 @@ namespace arch
 
 	void advance_guest_rip();
 
+	std::uint64_t get_guest_lstar(bool* out_is_from_list = nullptr);
+	std::uint64_t get_guest_gs_base();
+
 #ifdef _INTELMACHINE
 	vmx_exit_qualification_ept_violation get_exit_qualification();
 

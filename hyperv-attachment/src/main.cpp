@@ -7,6 +7,7 @@
 #include "structures/trap_frame.h"
 #include <ia32-doc/ia32.hpp>
 #include <cstdint>
+#include <intrin.h>
 
 #include "crt/crt.h"
 #include "interrupts/interrupts.h"
@@ -54,39 +55,81 @@ void process_first_vmexit()
         is_first_vmexit = 0;
     }
 
-    static std::uint8_t has_hidden_heap_pages = 0;
-    static std::uint64_t vmexit_count = 0;
+    static uint8_t has_hidden_heap_pages = 0;
+    static uint64_t vmexit_count = 0;
     
     // VMM Shadow Mapper: Deployment state
-    static std::uint8_t dkom_deployed = 0;
-    static std::uint8_t rwbase_deployed = 0;
-    constexpr std::uint64_t DKOM_DEPLOY_THRESHOLD = 1500000;  // 1.5M VMExits
-    constexpr std::uint64_t HEAP_HIDE_THRESHOLD = 2000000;    // 2M VMExits
+    static uint8_t dkom_deployed = 0;
+    static uint8_t rwbase_deployed = 0;
+    // [DEBUG] DISABLED: Set to MAX to prevent deployment while debugging crash
+    constexpr uint64_t DKOM_DEPLOY_THRESHOLD = UINT64_MAX;  // DISABLED for debugging
+    constexpr uint64_t HEAP_HIDE_THRESHOLD = UINT64_MAX;    // DISABLED for debugging
 
     ++vmexit_count;
+
+    // [ARCHITECT TASK 1] ntoskrnl_base Resolution with Performance Barrier
+    // Strategy: Search only if not yet found. Periodic sync every 10K VMExits if base is 0.
+    if (g_ntoskrnl_base == 0 && (vmexit_count == 1 || (vmexit_count % 10000 == 0)))
+    {
+        const cr3 guest_cr3 = arch::get_guest_cr3();
+        const cr3 slat_cr3 = slat::hyperv_cr3();
+        bool is_from_list = false;
+        const uint64_t guest_lstar = arch::get_guest_lstar(&is_from_list);
+        const uint64_t guest_gs_base = arch::get_guest_gs_base();
+
+        // [DIAGNOSTIC] Log probe status every 50k exits
+        // Fix: Use %x for vmexit_count to avoid custom logger issues with %llu
+        if (vmexit_count == 1 || (vmexit_count % 50000 == 0))
+        {
+            logs::print("[Loader] Probe [%x]: LSTAR=0x%p (%s), GS=0x%p, CR3=0x%p\n", 
+                static_cast<uint32_t>(vmexit_count), guest_lstar, is_from_list ? "List" : "Field", guest_gs_base, guest_cr3.flags);
+        }
+
+        // Update discovery context
+        loader::set_discovery_cr3(guest_cr3);
+        loader::set_discovery_slat_cr3(slat_cr3);
+
+        if (guest_lstar != 0)
+        {
+            g_ntoskrnl_base = loader::find_ntoskrnl_via_lstar(guest_lstar, guest_cr3, slat_cr3);
+            
+            if (g_ntoskrnl_base != 0)
+            {
+                logs::print("[Loader] ntoskrnl_base resolved: 0x%p via %s\n", 
+                    g_ntoskrnl_base, is_from_list ? "MSR-Store List" : "Dedicated Field");
+                loader::init_guest_discovery(g_ntoskrnl_base);
+            }
+        }
+
+        // [ARCHITECT TASK 1.2] Failover: Try GS_BASE if LSTAR failed
+        if (g_ntoskrnl_base == 0 && guest_gs_base != 0)
+        {
+            g_ntoskrnl_base = loader::find_ntoskrnl_via_gs_base(guest_gs_base, guest_cr3, slat_cr3);
+
+            if (g_ntoskrnl_base != 0)
+            {
+                logs::print("[Loader] ntoskrnl_base resolved: 0x%p via GS_BASE\n", g_ntoskrnl_base);
+                loader::init_guest_discovery(g_ntoskrnl_base);
+            }
+        }
+    }
 
     // Stage 1: Deploy DKOM at 1.5M VMExits (before heap hiding)
     if (dkom_deployed == 0 && vmexit_count >= DKOM_DEPLOY_THRESHOLD)
     {
-        logs::print("[Loader] DKOM deployment threshold reached (%d VMExits)\n", vmexit_count);
-        
         if (g_ntoskrnl_base != 0)
         {
             const auto result = loader::deploy_dkom_payload(g_ntoskrnl_base);
             if (result == loader::deploy_result_t::success)
             {
                 logs::print("[Loader] DKOM deployed successfully\n");
+                dkom_deployed = 1; // Only set on success
             }
             else
             {
-                logs::print("[Loader] DKOM deployment failed: %d\n", static_cast<uint32_t>(result));
+                logs::print("[Loader] DKOM deployment failed: %d (will retry)\n", static_cast<uint32_t>(result));
             }
         }
-        else
-        {
-            logs::print("[Loader] DKOM skipped: ntoskrnl_base not yet resolved\n");
-        }
-        dkom_deployed = 1;
     }
 
     // Stage 2: Hide heap pages at 2M VMExits
@@ -106,12 +149,12 @@ void process_first_vmexit()
                 if (result == loader::deploy_result_t::success)
                 {
                     logs::print("[Loader] RWbase deployed with SLAT hiding\n");
+                    rwbase_deployed = 1; // Only set on success
                 }
                 else
                 {
-                    logs::print("[Loader] RWbase deployment failed: %d\n", static_cast<uint32_t>(result));
+                    logs::print("[Loader] RWbase deployment failed: %d (will retry)\n", static_cast<uint32_t>(result));
                 }
-                rwbase_deployed = 1;
             }
         }
     }
@@ -217,9 +260,15 @@ struct image_section_header {
 };
 #pragma pack(pop)
 
-void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* const original_vmexit_handler_routine, const std::uint64_t heap_physical_base, const std::uint64_t heap_physical_usable_base, const std::uint64_t heap_total_size, const std::uint64_t _uefi_boot_physical_base_address, const std::uint32_t _uefi_boot_image_size, const std::uint64_t reserved_one)
+void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* const original_vmexit_handler_routine, const std::uint64_t heap_physical_base, const std::uint64_t heap_physical_usable_base, const std::uint64_t heap_total_size, const std::uint64_t _uefi_boot_physical_base_address, const std::uint32_t _uefi_boot_image_size, const std::uint64_t reserved_one, const std::uint64_t ntoskrnl_base_from_uefi)
 {
     (void)reserved_one; // Intel Only
+
+    // Task 1.4: Receive ntoskrnl_base captured by uefi-boot from LoaderBlock
+    if (ntoskrnl_base_from_uefi != 0)
+    {
+        g_ntoskrnl_base = ntoskrnl_base_from_uefi;
+    }
 
     original_vmexit_handler = original_vmexit_handler_routine;
     uefi_boot_physical_base_address = _uefi_boot_physical_base_address;
@@ -254,6 +303,16 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
             logs::print("[Init] Hyper-reV Entry Point reached.\n");
             logs::print("[Init] Heap Physical Base: 0x%p, Size: 0x%p\n", heap_physical_base, heap_total_size);
             logs::print("[Init] UEFI Boot Physical Base: 0x%p, Size: 0x%x\n", _uefi_boot_physical_base_address, _uefi_boot_image_size);
+            
+            // Task 1.4: Log the captured ntoskrnl_base from UEFI stage
+            if (g_ntoskrnl_base != 0)
+            {
+                logs::print("[Task 1.4] ntoskrnl_base received from UEFI: 0x%p\n", g_ntoskrnl_base);
+            }
+            else
+            {
+                logs::print("[Task 1.4] WARNING: ntoskrnl_base = 0. Falling back to passive probing.\n");
+            }
             
             logs::print("[Stealth] PE Image Base: 0x%p\n", g_image_base);
             logs::print("[Stealth] Full Image Range: 0x%p - 0x%p\n", g_image_base, g_image_base + g_image_size);

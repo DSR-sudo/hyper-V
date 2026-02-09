@@ -27,19 +27,19 @@ namespace {
 // Guest Context Management
 // =============================================================================
 
-void set_guest_cr3(cr3 guest_cr3) {
+void set_discovery_cr3(cr3 guest_cr3) {
     g_guest_cr3 = guest_cr3;
 }
 
-void set_slat_cr3(cr3 slat_cr3) {
+void set_discovery_slat_cr3(cr3 slat_cr3) {
     g_slat_cr3 = slat_cr3;
 }
 
-cr3 get_guest_cr3() {
+cr3 get_discovery_cr3() {
     return g_guest_cr3;
 }
 
-cr3 get_slat_cr3() {
+cr3 get_discovery_slat_cr3() {
     return g_slat_cr3;
 }
 
@@ -47,17 +47,17 @@ cr3 get_slat_cr3() {
 // Memory Read Helper
 // =============================================================================
 
-static bool read_guest_memory(uint64_t guest_va, void* buffer, uint64_t size)
+bool read_guest_memory_explicit(uint64_t guest_va, void* buffer, uint64_t size, cr3 guest_cr3, cr3 slat_cr3)
 {
-    if (g_slat_cr3.flags == 0 || g_guest_cr3.flags == 0) {
+    if (slat_cr3.flags == 0 || guest_cr3.flags == 0) {
         return false;
     }
 
     const uint64_t bytes_read = memory_manager::operate_on_guest_virtual_memory(
-        g_slat_cr3,
+        slat_cr3,
         buffer,
         guest_va,
-        g_guest_cr3,
+        guest_cr3,
         size,
         memory_operation_t::read_operation
     );
@@ -65,25 +65,27 @@ static bool read_guest_memory(uint64_t guest_va, void* buffer, uint64_t size)
     return bytes_read == size;
 }
 
+static bool read_guest_memory(uint64_t guest_va, void* buffer, uint64_t size)
+{
+    return read_guest_memory_explicit(guest_va, buffer, size, g_guest_cr3, g_slat_cr3);
+}
+
 // =============================================================================
 // ntoskrnl Detection via MSR_LSTAR
 // =============================================================================
 
-uint64_t find_ntoskrnl_via_lstar()
+uint64_t find_ntoskrnl_via_lstar(uint64_t guest_lstar, cr3 guest_cr3, cr3 slat_cr3)
 {
-    // Read MSR_LSTAR which contains KiSystemCall64 address
-    const uint64_t ki_system_call = __readmsr(0xC0000082);  // IA32_LSTAR
-    
-    if (ki_system_call == 0 || ki_system_call < 0xFFFF800000000000ULL) {
-        logs::print("[Guest] MSR_LSTAR invalid: 0x%p\n", ki_system_call);
+    if (guest_lstar == 0 || guest_lstar < 0xFFFF800000000000ULL) {
+        logs::print("[Guest] LSTAR invalid: 0x%p\n", guest_lstar);
         return 0;
     }
 
-    logs::print("[Guest] KiSystemCall64 at 0x%p\n", ki_system_call);
+    logs::print("[Guest] KiSystemCall64 at 0x%p\n", guest_lstar);
 
     // Walk backwards to find MZ header (page aligned)
     // ntoskrnl is typically aligned to 4KB or larger boundaries
-    uint64_t search_base = ki_system_call & ~0xFFFULL;  // Page align down
+    uint64_t search_base = guest_lstar & ~0xFFFULL;  // Page align down
 
     // Search up to 32MB backwards (ntoskrnl is large)
     constexpr uint64_t max_search = 32 * 1024 * 1024;
@@ -92,14 +94,14 @@ uint64_t find_ntoskrnl_via_lstar()
     uint16_t dos_magic = 0;
 
     for (uint64_t addr = search_base; addr >= min_address; addr -= 0x1000) {
-        if (read_guest_memory(addr, &dos_magic, sizeof(dos_magic))) {
+        if (read_guest_memory_explicit(addr, &dos_magic, sizeof(dos_magic), guest_cr3, slat_cr3)) {
             if (dos_magic == IMAGE_DOS_SIGNATURE) {
                 // Verify NT header
                 int32_t e_lfanew = 0;
-                if (read_guest_memory(addr + 0x3C, &e_lfanew, sizeof(e_lfanew))) {
+                if (read_guest_memory_explicit(addr + 0x3C, &e_lfanew, sizeof(e_lfanew), guest_cr3, slat_cr3)) {
                     if (e_lfanew > 0 && e_lfanew < 0x1000) {
                         uint32_t nt_sig = 0;
-                        if (read_guest_memory(addr + e_lfanew, &nt_sig, sizeof(nt_sig))) {
+                        if (read_guest_memory_explicit(addr + e_lfanew, &nt_sig, sizeof(nt_sig), guest_cr3, slat_cr3)) {
                             if (nt_sig == IMAGE_NT_SIGNATURE) {
                                 logs::print("[Guest] Found ntoskrnl at 0x%p\n", addr);
                                 return addr;
@@ -112,6 +114,91 @@ uint64_t find_ntoskrnl_via_lstar()
     }
 
     logs::print("[Guest] Failed to locate ntoskrnl\n");
+    return 0;
+}
+
+uint64_t find_ntoskrnl_via_gs_base(uint64_t guest_gs_base, cr3 guest_cr3, cr3 slat_cr3)
+{
+    // Rate-limit log spam
+    static uint8_t gs_invalid_logged = 0;
+
+    if (guest_gs_base == 0 || guest_gs_base < 0xFFFF800000000000ULL) {
+        if (gs_invalid_logged == 0) {
+            logs::print("[Guest] GS_BASE invalid: 0x%p (logging once)\n", guest_gs_base);
+            gs_invalid_logged = 1;
+        }
+        return 0;
+    }
+
+    // 1. Read KPCR.IdtBase (Offset 0x38 in x64 KPCR)
+    uint64_t idt_base = 0;
+    if (!read_guest_memory_explicit(guest_gs_base + 0x38, &idt_base, sizeof(idt_base), guest_cr3, slat_cr3)) {
+        logs::print("[Guest] Failed to read IdtBase at 0x%p\n", guest_gs_base + 0x38);
+        return 0;
+    }
+
+    if (idt_base == 0 || idt_base < 0xFFFF800000000000ULL) {
+        logs::print("[Guest] IdtBase invalid: 0x%p\n", idt_base);
+        return 0;
+    }
+
+    logs::print("[Guest] IdtBase at 0x%p\n", idt_base);
+
+    // 2. Read IDT[0] (Divide Error ISR)
+    // IDT Entry (Gate Descriptor) is 16 bytes on x64
+    struct idt_entry_t {
+        uint16_t offset_low;
+        uint16_t selector;
+        uint8_t  ist_index;
+        uint8_t  type_attributes;
+        uint16_t offset_mid;
+        uint32_t offset_high;
+        uint32_t reserved;
+    } first_entry;
+
+    if (!read_guest_memory_explicit(idt_base, &first_entry, sizeof(first_entry), guest_cr3, slat_cr3)) {
+        logs::print("[Guest] Failed to read IDT[0]\n");
+        return 0;
+    }
+
+    const uint64_t isr_address = (static_cast<uint64_t>(first_entry.offset_high) << 32) |
+                                 (static_cast<uint64_t>(first_entry.offset_mid) << 16) |
+                                  first_entry.offset_low;
+
+    if (isr_address == 0 || isr_address < 0xFFFF800000000000ULL) {
+        logs::print("[Guest] ISR invalid: 0x%p\n", isr_address);
+        return 0;
+    }
+
+    logs::print("[Guest] IDT[0] ISR at 0x%p\n", isr_address);
+
+    // 3. Scan backwards for MZ header from ISR
+    // Strategy: Page align down, search 32MB max
+    uint64_t search_base = isr_address & ~0xFFFULL;
+    constexpr uint64_t max_search = 32 * 1024 * 1024;
+    const uint64_t min_address = (search_base > max_search) ? (search_base - max_search) : 0xFFFF800000000000ULL;
+
+    uint16_t dos_magic = 0;
+
+    for (uint64_t addr = search_base; addr >= min_address; addr -= 0x1000) {
+        if (read_guest_memory_explicit(addr, &dos_magic, sizeof(dos_magic), guest_cr3, slat_cr3)) {
+            if (dos_magic == IMAGE_DOS_SIGNATURE) {
+                int32_t e_lfanew = 0;
+                if (read_guest_memory_explicit(addr + 0x3C, &e_lfanew, sizeof(e_lfanew), guest_cr3, slat_cr3)) {
+                    if (e_lfanew > 0 && e_lfanew < 0x1000) {
+                        uint32_t nt_sig = 0;
+                        if (read_guest_memory_explicit(addr + e_lfanew, &nt_sig, sizeof(nt_sig), guest_cr3, slat_cr3)) {
+                            if (nt_sig == IMAGE_NT_SIGNATURE) {
+                                logs::print("[Guest] Found ntoskrnl at 0x%p (via GS_BASE)\n", addr);
+                                return addr;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     return 0;
 }
 
@@ -341,8 +428,10 @@ bool init_guest_discovery(uint64_t ntoskrnl_base)
     if (ntoskrnl_base) {
         g_module_cache.ntoskrnl_base = ntoskrnl_base;
     } else {
-        // Auto-detect via MSR_LSTAR
-        g_module_cache.ntoskrnl_base = find_ntoskrnl_via_lstar();
+        // [ERROR] Auto-detect via MSR_LSTAR requires guest context now.
+        // This function should be called from VMExit handler with explicit values.
+        logs::print("[Guest] init_guest_discovery: Manual ntoskrnl base required\n");
+        return false;
     }
 
     if (!g_module_cache.ntoskrnl_base) {

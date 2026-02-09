@@ -3,6 +3,7 @@
 #include "../memory_manager/heap_manager.h"
 #include "../crt/crt.h"
 #include <ia32-doc/ia32.hpp>
+#include "../arch/arch.h"
 
 #include "cr3/cr3.h"
 #include "cr3/pte.h"

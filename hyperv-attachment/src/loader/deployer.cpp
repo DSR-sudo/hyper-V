@@ -286,7 +286,7 @@ deploy_result_t deploy_dkom_payload(const uint64_t ntoskrnl_base)
     // Initialize Guest discovery if not already done
     if (!g_module_cache.initialized) {
         // Set Guest/SLAT CR3 for module discovery
-        set_slat_cr3(slat::hyperv_cr3());
+        set_discovery_slat_cr3(slat::hyperv_cr3());
         // Guest CR3 needs to be captured from trap frame during VMExit
         // For now, we assume it's already set by main.cpp
         
@@ -382,7 +382,7 @@ deploy_result_t deploy_rwbase_payload(const uint64_t ntoskrnl_base)
 
     // Initialize Guest discovery
     if (!g_module_cache.initialized) {
-        set_slat_cr3(slat::hyperv_cr3());
+        set_discovery_slat_cr3(slat::hyperv_cr3());
         if (!init_guest_discovery(ntoskrnl_base)) {
             logs::print("[Loader] WARNING: Guest discovery init failed\n");
         }

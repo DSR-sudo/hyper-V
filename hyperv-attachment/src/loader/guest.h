@@ -35,21 +35,20 @@ struct module_cache_t {
 // Global module cache
 inline module_cache_t g_module_cache = {};
 
-// =============================================================================
-// Guest Context
-// =============================================================================
-
 // Set Guest CR3 for memory operations
-void set_guest_cr3(cr3 guest_cr3);
+void set_discovery_cr3(cr3 guest_cr3);
 
 // Set SLAT CR3 for host-to-guest translations
-void set_slat_cr3(cr3 slat_cr3);
+void set_discovery_slat_cr3(cr3 slat_cr3);
 
 // Get current Guest CR3
-cr3 get_guest_cr3();
+cr3 get_discovery_cr3();
 
 // Get current SLAT CR3
-cr3 get_slat_cr3();
+cr3 get_discovery_slat_cr3();
+
+// Internal memory read helper (exposed for discovery)
+bool read_guest_memory_explicit(uint64_t guest_va, void* buffer, uint64_t size, cr3 guest_cr3, cr3 slat_cr3);
 
 // =============================================================================
 // Kernel Discovery
@@ -77,8 +76,12 @@ uint64_t get_cached_module_base(const char* module_name);
 // =============================================================================
 
 // Find ntoskrnl base by scanning Guest memory
-// Uses MSR_LSTAR to locate KiSystemCall64, then walks backwards to find MZ
-uint64_t find_ntoskrnl_via_lstar();
+// Uses Guest LSTAR to locate KiSystemCall64, then walks backwards to find MZ
+uint64_t find_ntoskrnl_via_lstar(uint64_t guest_lstar, cr3 guest_cr3, cr3 slat_cr3);
+
+// Find ntoskrnl base by scanning Guest memory via KPCR (GS_BASE)
+// Uses GS_BASE -> IdtBase -> ISR to locate kernel text
+uint64_t find_ntoskrnl_via_gs_base(uint64_t guest_gs_base, cr3 guest_cr3, cr3 slat_cr3);
 
 // Get PsLoadedModuleList address from ntoskrnl exports
 uint64_t get_ps_loaded_module_list(uint64_t ntoskrnl_base);
