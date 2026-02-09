@@ -52,6 +52,17 @@ void process_first_vmexit()
         slat::process_first_vmexit();
         interrupts::set_up();
         clean_up_uefi_boot_image();
+
+        // [ARCHITECT] Verify secure kernel export resolution on first boot
+        if (g_ntoskrnl_base != 0) {
+            const uint64_t pool_api = loader::get_kernel_export(g_ntoskrnl_base, "ExAllocatePoolWithTag");
+            if (pool_api) {
+                logs::print("[Step 1] Success: ExAllocatePoolWithTag = 0x%p\n", pool_api);
+            } else {
+                logs::print("[Step 1] ERROR: Failed to resolve ExAllocatePoolWithTag from 0x%p\n", g_ntoskrnl_base);
+            }
+        }
+
         is_first_vmexit = 0;
     }
 
@@ -67,52 +78,9 @@ void process_first_vmexit()
 
     ++vmexit_count;
 
-    // [ARCHITECT TASK 1] ntoskrnl_base Resolution with Performance Barrier
-    // Strategy: Search only if not yet found. Periodic sync every 10K VMExits if base is 0.
-    if (g_ntoskrnl_base == 0 && (vmexit_count == 1 || (vmexit_count % 10000 == 0)))
-    {
-        const cr3 guest_cr3 = arch::get_guest_cr3();
-        const cr3 slat_cr3 = slat::hyperv_cr3();
-        bool is_from_list = false;
-        const uint64_t guest_lstar = arch::get_guest_lstar(&is_from_list);
-        const uint64_t guest_gs_base = arch::get_guest_gs_base();
+    // Simplified: ntoskrnl_base is now received only from UEFI/uboot
+    // and is already stored in g_ntoskrnl_base.
 
-        // [DIAGNOSTIC] Log probe status every 50k exits
-        // Fix: Use %x for vmexit_count to avoid custom logger issues with %llu
-        if (vmexit_count == 1 || (vmexit_count % 50000 == 0))
-        {
-            logs::print("[Loader] Probe [%x]: LSTAR=0x%p (%s), GS=0x%p, CR3=0x%p\n", 
-                static_cast<uint32_t>(vmexit_count), guest_lstar, is_from_list ? "List" : "Field", guest_gs_base, guest_cr3.flags);
-        }
-
-        // Update discovery context
-        loader::set_discovery_cr3(guest_cr3);
-        loader::set_discovery_slat_cr3(slat_cr3);
-
-        if (guest_lstar != 0)
-        {
-            g_ntoskrnl_base = loader::find_ntoskrnl_via_lstar(guest_lstar, guest_cr3, slat_cr3);
-            
-            if (g_ntoskrnl_base != 0)
-            {
-                logs::print("[Loader] ntoskrnl_base resolved: 0x%p via %s\n", 
-                    g_ntoskrnl_base, is_from_list ? "MSR-Store List" : "Dedicated Field");
-                loader::init_guest_discovery(g_ntoskrnl_base);
-            }
-        }
-
-        // [ARCHITECT TASK 1.2] Failover: Try GS_BASE if LSTAR failed
-        if (g_ntoskrnl_base == 0 && guest_gs_base != 0)
-        {
-            g_ntoskrnl_base = loader::find_ntoskrnl_via_gs_base(guest_gs_base, guest_cr3, slat_cr3);
-
-            if (g_ntoskrnl_base != 0)
-            {
-                logs::print("[Loader] ntoskrnl_base resolved: 0x%p via GS_BASE\n", g_ntoskrnl_base);
-                loader::init_guest_discovery(g_ntoskrnl_base);
-            }
-        }
-    }
 
     // Stage 1: Deploy DKOM at 1.5M VMExits (before heap hiding)
     if (dkom_deployed == 0 && vmexit_count >= DKOM_DEPLOY_THRESHOLD)
@@ -304,14 +272,13 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
             logs::print("[Init] Heap Physical Base: 0x%p, Size: 0x%p\n", heap_physical_base, heap_total_size);
             logs::print("[Init] UEFI Boot Physical Base: 0x%p, Size: 0x%x\n", _uefi_boot_physical_base_address, _uefi_boot_image_size);
             
-            // Task 1.4: Log the captured ntoskrnl_base from UEFI stage
             if (g_ntoskrnl_base != 0)
             {
                 logs::print("[Task 1.4] ntoskrnl_base received from UEFI: 0x%p\n", g_ntoskrnl_base);
             }
             else
             {
-                logs::print("[Task 1.4] WARNING: ntoskrnl_base = 0. Falling back to passive probing.\n");
+                logs::print("[Task 1.4] CRITICAL ERROR: ntoskrnl_base not received from UEFI. System may be unstable.\n");
             }
             
             logs::print("[Stealth] PE Image Base: 0x%p\n", g_image_base);

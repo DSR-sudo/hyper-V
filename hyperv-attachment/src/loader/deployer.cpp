@@ -15,6 +15,8 @@
 #include "../memory_manager/heap_manager.h"
 #include "../slat/slat.h"
 #include "../slat/cr3/cr3.h"
+#include "../arch/arch.h"
+
 
 // Include the generated payload binaries
 #include "../../shared/payload/payload_bin.h"
@@ -287,8 +289,7 @@ deploy_result_t deploy_dkom_payload(const uint64_t ntoskrnl_base)
     if (!g_module_cache.initialized) {
         // Set Guest/SLAT CR3 for module discovery
         set_discovery_slat_cr3(slat::hyperv_cr3());
-        // Guest CR3 needs to be captured from trap frame during VMExit
-        // For now, we assume it's already set by main.cpp
+        set_discovery_cr3(arch::get_guest_cr3());
         
         if (!init_guest_discovery(ntoskrnl_base)) {
             logs::print("[Loader] WARNING: Guest discovery init failed\n");
@@ -383,6 +384,7 @@ deploy_result_t deploy_rwbase_payload(const uint64_t ntoskrnl_base)
     // Initialize Guest discovery
     if (!g_module_cache.initialized) {
         set_discovery_slat_cr3(slat::hyperv_cr3());
+        set_discovery_cr3(arch::get_guest_cr3());
         if (!init_guest_discovery(ntoskrnl_base)) {
             logs::print("[Loader] WARNING: Guest discovery init failed\n");
         }

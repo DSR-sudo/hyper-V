@@ -8,6 +8,9 @@
 #include "guest.h"
 #include "../logs/logs.h"
 #include "../crt/crt.h"
+#include "../arch/arch.h"
+#include "../slat/cr3/cr3.h"
+#include "../memory_manager/memory_manager.h"
 
 namespace loader {
 
@@ -45,7 +48,7 @@ int str_compare_insensitive(const char* s1, const char* s2)
 }
 
 // =============================================================================
-// Export Table Resolution
+// Export Table Resolution (Secure Guest Access)
 // =============================================================================
 
 uint64_t get_kernel_export(const uint64_t module_base, const char* function_name)
@@ -54,55 +57,76 @@ uint64_t get_kernel_export(const uint64_t module_base, const char* function_name
         return 0;
     }
 
-    // Get NT headers
-    const auto dos_header = reinterpret_cast<image_dos_header_t*>(module_base);
-    if (dos_header->e_magic != IMAGE_DOS_SIGNATURE) {
+    // Capture current Guest context
+    const cr3 guest_cr3 = arch::get_guest_cr3();
+    const cr3 slat_cr3 = slat::hyperv_cr3();
+
+    // Helper: read from Guest virtual memory
+    auto read_guest = [&](uint64_t gva, void* buf, uint64_t size) -> bool {
+        return memory_manager::operate_on_guest_virtual_memory(
+            slat_cr3, buf, gva, guest_cr3, size, memory_operation_t::read_operation
+        ) == size;
+    };
+
+    // 1. Read DOS Header
+    image_dos_header_t dos_header;
+    if (!read_guest(module_base, &dos_header, sizeof(dos_header)) || 
+        dos_header.e_magic != IMAGE_DOS_SIGNATURE) {
         return 0;
     }
 
-    const auto nt_headers = reinterpret_cast<image_nt_headers64_t*>(
-        module_base + dos_header->e_lfanew
-    );
-    if (nt_headers->signature != IMAGE_NT_SIGNATURE) {
+    // 2. Read NT Headers
+    image_nt_headers64_t nt_headers;
+    if (!read_guest(module_base + dos_header.e_lfanew, &nt_headers, sizeof(nt_headers)) ||
+        nt_headers.signature != IMAGE_NT_SIGNATURE) {
         return 0;
     }
 
-    // Get export directory
-    const auto& export_dir_entry = nt_headers->optional_header.data_directory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-    if (!export_dir_entry.virtual_address || !export_dir_entry.size) {
+    // 3. Get Export Directory RVA and Size
+    const auto& export_dir_entry = nt_headers.optional_header.data_directory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (export_dir_entry.virtual_address == 0 || export_dir_entry.size == 0) {
         return 0;
     }
 
-    const auto export_dir = reinterpret_cast<image_export_directory_t*>(
-        module_base + export_dir_entry.virtual_address
-    );
+    // 4. Read Export Directory
+    image_export_directory_t export_dir;
+    if (!read_guest(module_base + export_dir_entry.virtual_address, &export_dir, sizeof(export_dir))) {
+        return 0;
+    }
 
-    // Get export tables
-    const auto name_table = reinterpret_cast<uint32_t*>(
-        module_base + export_dir->address_of_names
-    );
-    const auto ordinal_table = reinterpret_cast<uint16_t*>(
-        module_base + export_dir->address_of_name_ordinals
-    );
-    const auto function_table = reinterpret_cast<uint32_t*>(
-        module_base + export_dir->address_of_functions
-    );
+    // 5. Read Export Tables
+    // Local buffers for table addresses
+    const uint64_t names_va = module_base + export_dir.address_of_names;
+    const uint64_t ordinals_va = module_base + export_dir.address_of_name_ordinals;
+    const uint64_t functions_va = module_base + export_dir.address_of_functions;
 
-    // Linear search through export names
-    for (uint32_t i = 0; i < export_dir->number_of_names; ++i) {
-        const char* current_name = reinterpret_cast<const char*>(
-            module_base + name_table[i]
-        );
+    for (uint32_t i = 0; i < export_dir.number_of_names; ++i) {
+        uint32_t name_rva = 0;
+        if (!read_guest(names_va + i * sizeof(uint32_t), &name_rva, sizeof(uint32_t))) {
+            continue;
+        }
+
+        // Read export name string (max 256 chars for safety)
+        char current_name[256] = { 0 };
+        if (!read_guest(module_base + name_rva, current_name, sizeof(current_name) - 1)) {
+            continue;
+        }
 
         if (str_compare_insensitive(current_name, function_name) == 0) {
-            const uint16_t ordinal = ordinal_table[i];
-            const uint32_t function_rva = function_table[ordinal];
+            uint16_t ordinal = 0;
+            if (!read_guest(ordinals_va + i * sizeof(uint16_t), &ordinal, sizeof(uint16_t))) {
+                return 0;
+            }
 
-            // Check for forwarded export (RVA within export directory)
+            uint32_t function_rva = 0;
+            if (!read_guest(functions_va + ordinal * sizeof(uint32_t), &function_rva, sizeof(uint32_t))) {
+                return 0;
+            }
+
+            // Check for forwarded export (RVA within export directory range)
             if (function_rva >= export_dir_entry.virtual_address &&
                 function_rva < export_dir_entry.virtual_address + export_dir_entry.size) {
-                // Forwarded export - we don't handle these for now
-                logs::print("[Loader] Warning: Forwarded export %s not supported\n", function_name);
+                logs::print("[Loader] Warning: Forwarded export '%s' not supported\n", function_name);
                 return 0;
             }
 

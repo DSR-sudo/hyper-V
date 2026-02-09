@@ -11,6 +11,24 @@ void crt::set_memory(void* const destination, const std::uint8_t value, const st
 	__stosb(static_cast<std::uint8_t*>(destination), value, size);
 }
 
+// Forward declarations with C linkage
+extern "C" void* __cdecl memset(void*, int, unsigned __int64);
+extern "C" void* __cdecl memcpy(void*, const void*, unsigned __int64);
+
+#pragma function(memset, memcpy)
+
+extern "C" void* __cdecl memset(void* dest, int val, unsigned __int64 count)
+{
+	crt::set_memory(dest, static_cast<std::uint8_t>(val), count);
+	return dest;
+}
+
+extern "C" void* __cdecl memcpy(void* dest, const void* src, unsigned __int64 count)
+{
+	crt::copy_memory(dest, src, count);
+	return dest;
+}
+
 void crt::mutex_t::lock()
 {
 	while (_InterlockedCompareExchange64(&value_, 1, 0) != 0)

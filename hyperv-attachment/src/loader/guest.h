@@ -75,13 +75,6 @@ uint64_t get_cached_module_base(const char* module_name);
 // PsLoadedModuleList Traversal
 // =============================================================================
 
-// Find ntoskrnl base by scanning Guest memory
-// Uses Guest LSTAR to locate KiSystemCall64, then walks backwards to find MZ
-uint64_t find_ntoskrnl_via_lstar(uint64_t guest_lstar, cr3 guest_cr3, cr3 slat_cr3);
-
-// Find ntoskrnl base by scanning Guest memory via KPCR (GS_BASE)
-// Uses GS_BASE -> IdtBase -> ISR to locate kernel text
-uint64_t find_ntoskrnl_via_gs_base(uint64_t guest_gs_base, cr3 guest_cr3, cr3 slat_cr3);
 
 // Get PsLoadedModuleList address from ntoskrnl exports
 uint64_t get_ps_loaded_module_list(uint64_t ntoskrnl_base);
