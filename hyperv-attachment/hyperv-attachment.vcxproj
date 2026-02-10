@@ -170,8 +170,10 @@
   <ItemGroup>
     <ClCompile Include="src\apic\apic.cpp" />
     <ClCompile Include="src\arch\arch.cpp" />
+    <ClCompile Include="src\core\core.cpp" />
     <ClCompile Include="src\crt\crt.cpp" />
     <ClCompile Include="src\hypercall\hypercall.cpp" />
+    <ClCompile Include="src\injection\injector.cpp" />
     <ClCompile Include="src\interrupts\interrupts.cpp" />
     <ClCompile Include="src\loader\scan.cpp" />
     <ClCompile Include="src\loader\shellcode.cpp" />
@@ -201,8 +203,10 @@
     <ClInclude Include="src\arch_config.h" />
     <ClInclude Include="ext\ia32-doc\ia32.hpp" />
     <ClInclude Include="src\arch\arch.h" />
+    <ClInclude Include="src\core\core.h" />
     <ClInclude Include="src\crt\crt.h" />
     <ClInclude Include="src\hypercall\hypercall.h" />
+    <ClInclude Include="src\injection\injector.h" />
     <ClInclude Include="src\interrupts\interrupts.h" />
     <ClInclude Include="src\loader\scan.h" />
     <ClInclude Include="src\loader\shellcode.h" />

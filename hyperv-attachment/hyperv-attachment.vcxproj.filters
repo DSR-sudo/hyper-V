@@ -21,6 +21,9 @@
     <ClCompile Include="src\arch\arch.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\core\core.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\slat\slat.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -31,6 +34,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\hypercall\hypercall.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\injection\injector.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\memory_manager\heap_manager.cpp">
@@ -95,6 +101,9 @@
     <ClInclude Include="src\arch\arch.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\core\core.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\slat\slat.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -108,6 +117,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\hypercall\hypercall.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\injection\injector.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\memory_manager\heap_manager.h">
