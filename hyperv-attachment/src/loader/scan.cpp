@@ -55,14 +55,17 @@ struct scan_ctx_t {
 // Callback called for each module found in Guest
 static bool scan_module_callback(const guest_module_info_t *info,
                                  void *context) {
+  logs::print("[Scan] Module found: %s at 0x%p\n", info->name,
+              info->base_address);
   auto *ctx = static_cast<scan_ctx_t *>(context);
 
   // Security/Stability filters (similar to RWbase logic)
   // Skip critical system binaries to avoid instability
-  if (str_compare_insensitive(info->name, "ntoskrnl.exe") == 0 ||
-      str_compare_insensitive(info->name, "hal.dll") == 0 ||
+  if (str_compare_insensitive(info->name, "hal.dll") == 0 ||
       str_compare_insensitive(info->name, "kd.dll") == 0 ||
       str_compare_insensitive(info->name, "ci.dll") == 0 ||
+      str_compare_insensitive(info->name, "ntoskrnl.exe") ==
+          0 || // Skip Core Kernel
       str_compare_insensitive(info->name, "clipsp.sys") == 0) {
     return true; // Continue search
   }
@@ -112,23 +115,56 @@ static bool scan_module_callback(const guest_module_info_t *info,
   for (uint16_t i = 0; i < nt.file_header.number_of_sections; i++) {
     const auto &sec = sections[i];
 
-    // Filter: Must be Executable, Not Discardable
+    // Filter: Must be Executable, Not Discardable, and Contains CODE (0x20)
     // Characteristics & IMAGE_SCN_MEM_EXECUTE (0x20000000)
     // Characteristics & IMAGE_SCN_MEM_DISCARDABLE (0x02000000)
+    // Characteristics & IMAGE_SCN_CNT_CODE (0x00000020)
 
-    // 0x20000000 = 536870912
-    // 0x02000000 = 33554432
-
-    if ((sec.characteristics & 0x20000000) &&
+    // Only scan for codecave if we haven't found one yet
+    // Filter: Must be Executable, Not Discardable.
+    // We removed CNT_CODE (0x20) to find more candidates in drivers.
+    if (ctx->result_pa == 0 && (sec.characteristics & 0x20000000) &&
         !(sec.characteristics & 0x02000000)) {
 
       // We scan this section
       uint64_t sec_start_va = info->base_address + sec.virtual_address;
       uint32_t sec_size = sec.virtual_size; // VirtualSize is used for mapping
 
+      // [NEW] Slack Space Scanning
+      // Standard PE sections are page-aligned in memory.
+      // Unused space at the end of the last page is zero-filled but mapped as
+      // Executable.
+      uint64_t sec_end_va = sec_start_va + sec_size;
+      uint64_t sec_end_aligned = (sec_end_va + 0xFFF) & ~0xFFF;
+      uint64_t slack_size = sec_end_aligned - sec_end_va;
+
+      if (slack_size >= ctx->needed_size) {
+        // We found a perfect empty space at the end of the section!
+        // It's safe because it's outside VirtualSize data but inside the mapped
+        // Page.
+        uint64_t found_va = sec_end_va; // Start of slack
+        // Align 16 bytes for safety
+        if (found_va % 16 != 0) {
+          found_va = (found_va + 15) & ~15;
+          if (sec_end_aligned - found_va < ctx->needed_size)
+            found_va = 0; // Not enough after alignment
+        }
+
+        if (found_va) {
+          uint64_t pa = translate_guest_va(found_va);
+          if (pa) {
+            ctx->result_pa = pa;
+            ctx->result_va = found_va;
+            logs::print("[Scan] Found Slack Space in %s at VA:0x%p (PA:0x%p) "
+                        "Size:0x%x\n",
+                        info->name, found_va, pa, slack_size);
+            return true;
+          }
+        }
+      }
+
       // Read section content chunk by chunk
       // Scanning for 0xCC padding.
-
       uint32_t consecutive_cc = 0;
       // Global index in section
       for (uint32_t offset = 0; offset < sec_size; offset += 0x200) {
@@ -163,10 +199,9 @@ static bool scan_module_callback(const guest_module_info_t *info,
               logs::print("[Scan] Found Codecave in %s at VA:0x%p (PA:0x%p)\n",
                           info->name, found_va, pa);
 
-              // Free heap (sections buffer) - utilizing simplified manager leak
-              // strategy for now (one page per scan request) or define free if
-              // user demands.
-              return false; // Stop enumeration
+              // Found one in this module. Return true to continue to NEXT
+              // module but stop scanning this one to avoid duplicates.
+              return true;
             }
           }
         }
@@ -178,7 +213,7 @@ static bool scan_module_callback(const guest_module_info_t *info,
   return true;
 }
 
-uint64_t find_codecave(uint32_t size, std::uint64_t ntoskrnl_base) {
+scan_result_t find_codecave(uint32_t size, std::uint64_t ntoskrnl_base) {
   if (!loader::g_module_cache.initialized) {
     // Ensure discovery is ready
     loader::set_discovery_cr3(arch::get_guest_cr3());
@@ -192,7 +227,7 @@ uint64_t find_codecave(uint32_t size, std::uint64_t ntoskrnl_base) {
   logs::print("[Scan] Searching for %d bytes codecave...\n", size);
   loader::enumerate_guest_modules(scan_module_callback, &ctx);
 
-  return ctx.result_pa;
+  return {ctx.result_pa, ctx.result_va};
 }
 
 void clear_codecave(uint64_t address, uint32_t size) {

