@@ -59,13 +59,12 @@ static bool scan_module_callback(const guest_module_info_t *info,
               info->base_address);
   auto *ctx = static_cast<scan_ctx_t *>(context);
 
-  // Security/Stability filters (similar to RWbase logic)
-  // Skip critical system binaries to avoid instability
+  // Security/Stability filters
+  // Skip critical DLLs to reduce risk, but ALLOW ntoskrnl.exe (safest for
+  // codecave)
   if (str_compare_insensitive(info->name, "hal.dll") == 0 ||
       str_compare_insensitive(info->name, "kd.dll") == 0 ||
       str_compare_insensitive(info->name, "ci.dll") == 0 ||
-      str_compare_insensitive(info->name, "ntoskrnl.exe") ==
-          0 || // Skip Core Kernel
       str_compare_insensitive(info->name, "clipsp.sys") == 0) {
     return true; // Continue search
   }

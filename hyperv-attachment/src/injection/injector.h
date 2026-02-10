@@ -1,7 +1,6 @@
 #pragma once
-#include "../../shared/structures/trap_frame.h"
+#include "../../../shared/structures/trap_frame.h"
 #include <cstdint>
-
 
 namespace injection {
 
@@ -19,8 +18,8 @@ private:
   // Internal helpers
   static void try_inject(trap_frame_t *trap_frame, uint64_t vmexit_count,
                          uint64_t ntoskrnl_base);
-  static void inject_minimal_shellcode(trap_frame_t *trap_frame,
-                                       uint64_t ex_allocate_pool);
+  static void inject_pool_shellcode(trap_frame_t *trap_frame,
+                                    uint64_t ex_allocate_pool);
   static void restore_context(trap_frame_t *trap_frame);
 
   // Deployment State

