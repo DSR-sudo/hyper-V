@@ -11,7 +11,7 @@
 #include "../crt/crt.h"
 
 #include <ia32-doc/ia32.hpp>
-#include <hypercall/hypercall_def.h>
+#include "../../shared/hypercall/hypercall_def.h"
 
 std::uint64_t operate_on_guest_physical_memory(const trap_frame_t* const trap_frame, const memory_operation_t operation)
 {

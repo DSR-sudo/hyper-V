@@ -1,14 +1,13 @@
 #include "arch/arch.h"
-#include "hypercall/hypercall.h"
-#include "hypercall/hypercall_def.h"
 #include "memory_manager/memory_manager.h"
 #include "memory_manager/heap_manager.h"
 #include "logs/logs.h"
-#include "structures/trap_frame.h"
 #include <ia32-doc/ia32.hpp>
 #include <cstdint>
 #include <intrin.h>
-
+#include "hypercall/hypercall.h"
+#include "../shared/hypercall/hypercall_def.h"
+#include "../shared/structures/trap_frame.h"
 #include "crt/crt.h"
 #include "interrupts/interrupts.h"
 #include "slat/slat.h"
