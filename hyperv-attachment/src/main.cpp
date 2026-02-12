@@ -1,3 +1,4 @@
+#include "business/business.h"
 #include "core/core.h"
 #include <cstdint>
 
@@ -16,6 +17,7 @@ entry_point(std::uint8_t **const vmexit_handler_detour_out,
 
   // Delegate to core initialization
   // Core will set *vmexit_handler_detour_out to its internal dispatch handler
+  core::set_business_callbacks(business::callbacks());
   core::initialize(vmexit_handler_detour_out, original_vmexit_handler_routine,
                    heap_physical_base, heap_physical_usable_base,
                    heap_total_size, _uefi_boot_physical_base_address,

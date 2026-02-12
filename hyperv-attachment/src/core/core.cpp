@@ -4,15 +4,14 @@
 #include "../arch/arch.h"
 #include "../crt/crt.h"
 #include "../hypercall/hypercall.h"
-#include "../injection/injector.h"
 #include "../interrupts/interrupts.h"
-#include "../loader/loader.h"
 #include "../logs/logs.h"
 #include "../memory_manager/heap_manager.h"
 #include "../memory_manager/memory_manager.h"
 #include "../slat/cr3/cr3.h"
 #include "../slat/slat.h"
 #include "../slat/violation/violation.h"
+#include <atomic>
 #include <ia32-doc/ia32.hpp>
 #include <intrin.h>
 
@@ -31,8 +30,54 @@ std::uint64_t g_text_end = 0;
 std::uint64_t g_data_start = 0;
 std::uint64_t g_data_end = 0;
 
-// VMM Global State
 std::uint64_t g_ntoskrnl_base = 0;
+const core::business_callbacks *g_business_callbacks = nullptr;
+
+constexpr std::uint64_t vmexit_window_size = 80000;
+constexpr std::uint16_t vmexit_reason_capacity = 256;
+std::atomic<std::uint64_t> g_vmexit_window_counter{0};
+std::atomic<std::uint64_t> g_vmexit_kernel_counter{0};
+std::atomic<std::uint64_t> g_vmexit_user_counter{0};
+std::atomic<std::uint64_t> g_vmexit_reason_counter[vmexit_reason_capacity] = {};
+
+void record_vmexit_statistics(const std::uint64_t exit_reason) {
+  const std::uint16_t reason =
+      static_cast<std::uint16_t>(exit_reason & 0xFFFF);
+  if (reason < vmexit_reason_capacity) {
+    g_vmexit_reason_counter[reason].fetch_add(1,
+                                              std::memory_order_relaxed);
+  }
+
+  const std::uint8_t cpl = arch::get_guest_cpl();
+  if (cpl == 0) {
+    g_vmexit_kernel_counter.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    g_vmexit_user_counter.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  const std::uint64_t window_count =
+      g_vmexit_window_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+  if ((window_count % vmexit_window_size) != 0) {
+    return;
+  }
+
+  const std::uint64_t kernel =
+      g_vmexit_kernel_counter.exchange(0, std::memory_order_relaxed);
+  const std::uint64_t user =
+      g_vmexit_user_counter.exchange(0, std::memory_order_relaxed);
+
+  logs::print("[VMExit-Stats] Window=%d Kernel=%d User=%d\n",
+              vmexit_window_size, kernel, user);
+
+  for (std::uint16_t i = 0; i < vmexit_reason_capacity; ++i) {
+    const std::uint64_t count =
+        g_vmexit_reason_counter[i].exchange(0, std::memory_order_relaxed);
+    if (count != 0) {
+      logs::print("[VMExit-Stats] Reason=%d Count=%d\n",
+                  static_cast<std::uint64_t>(i), count);
+    }
+  }
+}
 } // namespace
 
 namespace core {
@@ -94,6 +139,10 @@ struct image_section_header {
 };
 #pragma pack(pop)
 
+void set_business_callbacks(const business_callbacks *callbacks) {
+  g_business_callbacks = callbacks;
+}
+
 void clean_up_uefi_boot_image() {
   const auto mapped_uefi_boot_base = static_cast<std::uint8_t *>(
       memory_manager::map_host_physical(uefi_boot_physical_base_address));
@@ -108,57 +157,12 @@ void process_first_vmexit() {
     slat::process_first_vmexit();
     interrupts::set_up();
     clean_up_uefi_boot_image();
-
-    if (g_ntoskrnl_base != 0) {
-      const uint64_t pool_api =
-          loader::get_kernel_export(g_ntoskrnl_base, "ExAllocatePoolWithTag");
-      if (pool_api) {
-        logs::print("[Step 1] Success: ExAllocatePoolWithTag = 0x%p\n",
-                    pool_api);
-      } else {
-        logs::print("[Step 1] ERROR: Failed to resolve ExAllocatePoolWithTag "
-                    "from 0x%p\n",
-                    g_ntoskrnl_base);
-      }
+    if (g_business_callbacks != nullptr &&
+        g_business_callbacks->on_first_vmexit != nullptr) {
+      g_business_callbacks->on_first_vmexit(g_ntoskrnl_base);
     }
+
     is_first_vmexit = 0;
-  }
-}
-
-void handle_bsp_deployment(trap_frame_t *trap_frame) {
-  if (apic_t::current_apic_id() != 0)
-    return;
-
-  static uint8_t has_hidden_heap_pages = 0;
-  static uint64_t vmexit_count = 0;
-  static uint8_t rwbase_deployed = 0;
-  constexpr uint64_t HEAP_HIDE_THRESHOLD = UINT64_MAX;
-
-  ++vmexit_count;
-
-  if (vmexit_count % 10000 == 0) {
-    logs::print("[Runtime] BSP VMExit Count: 0x%x\n",
-                static_cast<uint32_t>(vmexit_count));
-  }
-
-  // [MODULAR] Delegate Injection Logic to Injector
-  injection::Injector::handle_bsp_deployment(trap_frame, vmexit_count,
-                                             g_ntoskrnl_base);
-
-  // Stage 2: Heap Hide
-  if (has_hidden_heap_pages == 0 && vmexit_count >= HEAP_HIDE_THRESHOLD) {
-    has_hidden_heap_pages = slat::hide_heap_pages(slat::hyperv_cr3());
-    if (has_hidden_heap_pages) {
-      logs::print("[Runtime] Heap memory hidden.\n");
-      if (rwbase_deployed == 0 && g_ntoskrnl_base != 0) {
-        logs::print("[Loader] RWbase deployment - START3 phase\n");
-        const auto result = loader::deploy_rwbase_payload(g_ntoskrnl_base);
-        if (result == loader::deploy_result_t::success) {
-          logs::print("[Loader] RWbase deployed with SLAT hiding\n");
-          rwbase_deployed = 1;
-        }
-      }
-    }
   }
 }
 
@@ -173,16 +177,34 @@ std::uint64_t dispatch_vmexit(const std::uint64_t a1, const std::uint64_t a2,
 
   const std::uint64_t exit_reason = arch::get_vmexit_reason();
   trap_frame_t *const trap_frame = *reinterpret_cast<trap_frame_t **>(a1);
+  record_vmexit_statistics(exit_reason);
 
-  // Handle Deployment (BSP Only)
-  handle_bsp_deployment(trap_frame);
-
-  if (arch::is_cpuid(exit_reason) == 1) {
-    // [MODULAR] Delegate Shellcode Return
-    if (injection::Injector::handle_shellcode_return(trap_frame)) {
-      return do_vmexit_premature_return();
+  const std::uint8_t is_cpuid_exit = arch::is_cpuid(exit_reason);
+  const std::uint8_t is_ept_violation = arch::is_slat_violation(exit_reason);
+  std::uint8_t cpuid_hypercall_processed = 0;
+  if (is_cpuid_exit == 1) {
+    const hypercall_info_t hypercall_info = {.value = trap_frame->rcx};
+    if (hypercall_info.primary_key == hypercall_primary_key &&
+        hypercall_info.secondary_key == hypercall_secondary_key &&
+        (hypercall_info.call_type == hypercall_type_t::prepare_manual_hijack ||
+         hypercall_info.call_type == hypercall_type_t::trigger_manual_hijack)) {
+      trap_frame->rsp = arch::get_guest_rsp();
+        hypercall::process(hypercall_info, trap_frame);
+        arch::set_guest_rsp(trap_frame->rsp);
+        arch::advance_guest_rip();
+        cpuid_hypercall_processed = 1;
     }
+  }
+  if (g_business_callbacks != nullptr &&
+      g_business_callbacks->on_vmexit != nullptr &&
+      g_business_callbacks->on_vmexit(exit_reason, trap_frame)) {
+    return do_vmexit_premature_return();
+  }
+  if (cpuid_hypercall_processed == 1) {
+    return do_vmexit_premature_return();
+  }
 
+  if (is_cpuid_exit == 1 && cpuid_hypercall_processed == 0) {
     const hypercall_info_t hypercall_info = {.value = trap_frame->rcx};
     if (hypercall_info.primary_key == hypercall_primary_key &&
         hypercall_info.secondary_key == hypercall_secondary_key) {
@@ -192,7 +214,7 @@ std::uint64_t dispatch_vmexit(const std::uint64_t a1, const std::uint64_t a2,
       arch::advance_guest_rip();
       return do_vmexit_premature_return();
     }
-  } else if (arch::is_slat_violation(exit_reason) == 1 &&
+  } else if (is_ept_violation == 1 &&
              slat::violation::process() == 1) {
     return do_vmexit_premature_return();
   } else if (arch::is_non_maskable_interrupt_exit(exit_reason) == 1) {

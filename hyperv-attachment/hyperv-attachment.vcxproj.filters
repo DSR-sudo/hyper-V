@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Source Files">
@@ -22,6 +22,15 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\core\core.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\business\business.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\business\driver_instrumentation\driver_instrumentation.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\business\kernel_scan\kernel_scan.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\slat\slat.cpp">
@@ -104,10 +113,31 @@
     <ClInclude Include="src\core\core.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\business\business.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\business\driver_instrumentation\driver_instrumentation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\business\kernel_scan\kernel_scan.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\slat\slat.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\structures\virtual_address.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\shared\hypercall\hypercall_def.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\shared\payload\payload_bin.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\shared\structures\memory_operation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\shared\structures\trap_frame.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\memory_manager\memory_manager.h">

@@ -6,6 +6,7 @@
 #include "../slat/cr3/cr3.h"
 #include "../slat/hook/hook.h"
 
+#include "../business/driver_instrumentation/driver_instrumentation.h"
 #include "../arch/arch.h"
 #include "../logs/logs.h"
 #include "../crt/crt.h"
@@ -315,6 +316,18 @@ void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* con
     case hypercall_type_t::get_heap_free_page_count:
     {
         trap_frame->rax = heap_manager::get_free_page_count();
+
+        break;
+    }
+    case hypercall_type_t::prepare_manual_hijack:
+    {
+        trap_frame->rax = business::driver_instrumentation::request_prepare();
+
+        break;
+    }
+    case hypercall_type_t::trigger_manual_hijack:
+    {
+        trap_frame->rax = business::driver_instrumentation::request_trigger();
 
         break;
     }

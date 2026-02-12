@@ -47,6 +47,137 @@ int str_compare_insensitive(const char* s1, const char* s2)
     return *s1 - *s2;
 }
 
+struct unicode_string_t
+{
+    std::uint16_t length;
+    std::uint16_t maximum_length;
+    std::uint32_t padding;
+    std::uint64_t buffer;
+};
+
+std::uint32_t ascii_length(const char* s)
+{
+    std::uint32_t length = 0;
+    while (s && *s)
+    {
+        ++length;
+        ++s;
+    }
+    return length;
+}
+
+bool wide_equals_ascii_insensitive(const std::uint16_t* wide, std::uint32_t wide_len, const char* ascii)
+{
+    if (!wide || !ascii)
+    {
+        return false;
+    }
+
+    const std::uint32_t ascii_len = ascii_length(ascii);
+    if (ascii_len != wide_len)
+    {
+        return false;
+    }
+
+    for (std::uint32_t i = 0; i < wide_len; ++i)
+    {
+        std::uint16_t w = wide[i];
+        char a = ascii[i];
+
+        if (a >= 'A' && a <= 'Z')
+        {
+            a = static_cast<char>(a + 32);
+        }
+
+        if (w >= 'A' && w <= 'Z')
+        {
+            w = static_cast<std::uint16_t>(w + 32);
+        }
+
+        if (w != static_cast<std::uint16_t>(a))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool find_guest_module(const char* module_name, const std::uint64_t ntoskrnl_base, guest_module_info_t* out_info)
+{
+    if (!module_name || !out_info || !ntoskrnl_base)
+    {
+        return false;
+    }
+
+    out_info->base_address = 0;
+    out_info->size = 0;
+
+    const cr3 guest_cr3 = arch::get_guest_cr3();
+    const cr3 slat_cr3 = slat::hyperv_cr3();
+
+    auto read_guest = [&](uint64_t gva, void* buf, uint64_t size) -> bool {
+        return memory_manager::operate_on_guest_virtual_memory(
+            slat_cr3, buf, gva, guest_cr3, size, memory_operation_t::read_operation
+        ) == size;
+    };
+
+    const std::uint64_t ps_loaded_module_list = get_kernel_export(ntoskrnl_base, "PsLoadedModuleList");
+    if (!ps_loaded_module_list)
+    {
+        return false;
+    }
+
+    std::uint64_t current_entry = 0;
+    if (!read_guest(ps_loaded_module_list, &current_entry, sizeof(current_entry)))
+    {
+        return false;
+    }
+
+    constexpr std::uint32_t max_iterations = 1024;
+    for (std::uint32_t i = 0; i < max_iterations && current_entry && current_entry != ps_loaded_module_list; ++i)
+    {
+        std::uint64_t next_entry = 0;
+        if (!read_guest(current_entry, &next_entry, sizeof(next_entry)))
+        {
+            break;
+        }
+
+        std::uint64_t module_base_address = 0;
+        std::uint32_t module_size = 0;
+        unicode_string_t module_name_unicode = {};
+
+        read_guest(current_entry + 0x30, &module_base_address, sizeof(module_base_address));
+        read_guest(current_entry + 0x40, &module_size, sizeof(module_size));
+        read_guest(current_entry + 0x58, &module_name_unicode, sizeof(module_name_unicode));
+
+        if (module_base_address && module_name_unicode.length && module_name_unicode.buffer)
+        {
+            std::uint16_t name_buffer[260] = {};
+            const std::uint32_t max_bytes = static_cast<std::uint32_t>(sizeof(name_buffer) - sizeof(std::uint16_t));
+            const std::uint32_t bytes_to_read = crt::min<std::uint32_t>(module_name_unicode.length, max_bytes);
+
+            if (bytes_to_read > 0 &&
+                read_guest(module_name_unicode.buffer, name_buffer, bytes_to_read))
+            {
+                const std::uint32_t char_count = bytes_to_read / sizeof(std::uint16_t);
+                name_buffer[char_count] = 0;
+
+                if (wide_equals_ascii_insensitive(name_buffer, char_count, module_name))
+                {
+                    out_info->base_address = module_base_address;
+                    out_info->size = module_size;
+                    return true;
+                }
+            }
+        }
+
+        current_entry = next_entry;
+    }
+
+    return false;
+}
+
 // =============================================================================
 // Export Table Resolution (Secure Guest Access)
 // =============================================================================
@@ -196,7 +327,7 @@ bool resolve_payload_imports(void* payload_image, const uint64_t ntoskrnl_base)
         else if (str_compare_insensitive(module_name, "HAL.dll") == 0) {
             // Try to find HAL in loaded modules, fallback to ntoskrnl re-exports
             guest_module_info_t hal_info = {};
-            if (find_guest_module("HAL.dll", &hal_info) && hal_info.base_address) {
+            if (find_guest_module("HAL.dll", ntoskrnl_base, &hal_info) && hal_info.base_address) {
                 resolve_module_base = hal_info.base_address;
                 logs::print("[Loader] HAL.dll found at 0x%p\n", resolve_module_base);
             } else {
@@ -209,7 +340,7 @@ bool resolve_payload_imports(void* payload_image, const uint64_t ntoskrnl_base)
         else if (str_compare_insensitive(module_name, "NETIO.SYS") == 0) {
             // CRITICAL: Must find actual NETIO.SYS - no fallback allowed
             guest_module_info_t netio_info = {};
-            if (find_guest_module("NETIO.SYS", &netio_info) && netio_info.base_address) {
+            if (find_guest_module("NETIO.SYS", ntoskrnl_base, &netio_info) && netio_info.base_address) {
                 resolve_module_base = netio_info.base_address;
                 logs::print("[Loader] NETIO.SYS found at 0x%p\n", resolve_module_base);
                 module_resolved = true;
@@ -221,7 +352,7 @@ bool resolve_payload_imports(void* payload_image, const uint64_t ntoskrnl_base)
         else if (str_compare_insensitive(module_name, "fwpkclnt.sys") == 0) {
             // Firewall Platform Callout Kernel - required for network filtering
             guest_module_info_t fwp_info = {};
-            if (find_guest_module("fwpkclnt.sys", &fwp_info) && fwp_info.base_address) {
+            if (find_guest_module("fwpkclnt.sys", ntoskrnl_base, &fwp_info) && fwp_info.base_address) {
                 resolve_module_base = fwp_info.base_address;
                 logs::print("[Loader] fwpkclnt.sys found at 0x%p\n", resolve_module_base);
                 module_resolved = true;
@@ -232,7 +363,7 @@ bool resolve_payload_imports(void* payload_image, const uint64_t ntoskrnl_base)
         }
         else if (str_compare_insensitive(module_name, "NDIS.SYS") == 0) {
             guest_module_info_t ndis_info = {};
-            if (find_guest_module("NDIS.SYS", &ndis_info) && ndis_info.base_address) {
+            if (find_guest_module("NDIS.SYS", ntoskrnl_base, &ndis_info) && ndis_info.base_address) {
                 resolve_module_base = ndis_info.base_address;
                 logs::print("[Loader] NDIS.SYS found at 0x%p\n", resolve_module_base);
                 module_resolved = true;
@@ -244,7 +375,7 @@ bool resolve_payload_imports(void* payload_image, const uint64_t ntoskrnl_base)
         else {
             // Unknown module - try to find it dynamically
             guest_module_info_t unknown_info = {};
-            if (find_guest_module(module_name, &unknown_info) && unknown_info.base_address) {
+            if (find_guest_module(module_name, ntoskrnl_base, &unknown_info) && unknown_info.base_address) {
                 resolve_module_base = unknown_info.base_address;
                 logs::print("[Loader] %s found at 0x%p\n", module_name, resolve_module_base);
                 module_resolved = true;

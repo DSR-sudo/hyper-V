@@ -1,0 +1,156 @@
+# Hyper Project Architecture Map
+# Generated: 2026-02-12
+# Role: Project Architect & Memory Manager
+
+## Project Overview
+Hyper is a hypervisor-based project focusing on Intel virtualization (VT-x). It provides a high-performance, stealthy environment for memory monitoring and system instrumentation. The project is decoupled into a UEFI bootloader, a core hypervisor component, and a usermode controller.
+
+## Directory Structure & Modules
+
+d:\Hyper
+├── hyperv-attachment/         # Core Hypervisor Component (Intel VT-x)
+│   ├── src/
+│   │   ├── apic/              # APIC & IPI Handling
+│   │   │   ├── apic.h/cpp     # apic_t class, IPI sending (NMI, SMI, INIT, Startup)
+│   │   │   ├── apic_def.h     # APIC register & ICR definitions
+│   │   │   └── apic_intrin.h  # APIC intrinsic wrappers for I/O
+│   │   ├── arch/              # Architecture-specific abstraction
+│   │   │   ├── arch.h/cpp     # VMCS abstraction, MTF control, CPUID check
+│   │   │   └── amd_def.h      # AMD-specific constants (reserved for future use)
+│   │   ├── core/              # Main initialization & VMExit dispatch
+│   │   │   ├── core.h/cpp     # initialize(), dispatch_vmexit(), handle_bsp_deployment()
+│   │   ├── crt/               # Minimal C Runtime implementation
+│   │   ├── business/          # High-level Business Logic & Instrumentation
+│   │   │   ├── business.h/cpp # callbacks() - Entry point for business integration
+│   │   │   ├── driver_instrumentation/ # Driver loading & execution monitoring
+│   │   │   │   └── driver_instrumentation.h/cpp # on_vmexit() - Driver interception
+│   │   │   └── kernel_scan/   # Advanced Kernel Pattern Matching
+│   │   │       └── kernel_scan.h/cpp # resolve_iop_load_driver() via cross-reference
+│   │   ├── hypercall/         # Hypercall interface for Guest/Host communication
+│   │   │   ├── hypercall.h/cpp# process() - Main dispatcher for custom hypercalls
+│   │   │   │   - **Physical Memory Operations**: guest_physical_memory_operation (Read/Write)
+│   │   │   │   - **Virtual Memory Operations**: guest_virtual_memory_operation (Cross-process)
+│   │   │   │   - **SLAT Controls**: add_slat_code_hook, remove_slat_code_hook, hide_guest_physical_page
+│   │   │   │   - **Diagnostic**: log_current_state, flush_logs, get_heap_free_page_count
+│   │   ├── interrupts/        # Interrupt & NMI management
+│   │   │   ├── interrupts.h/cpp# set_up(), process_nmi()
+│   │   │   └── interrupt_entry.asm # Low-level NMI entry stub
+│   │   ├── loader/            # Manual PE Mapping & Injection
+│   │   │   ├── pe.h           # PE header structures & constants
+│   │   │   ├── imports.h/cpp  # Kernel import resolution (ResolveImports)
+│   │   │   ├── reloc.h/cpp    # Base relocation handling
+│   │   │   ├── cookie.h/cpp   # Security cookie initialization
+│   │   │   └── guest.h        # Guest module enumeration (find_guest_module)
+│   │   ├── logs/              # In-memory logging system
+│   │   ├── memory_manager/    # Heap & Page management for VMM
+│   │   │   ├── heap_manager.h/cpp# Internal heap allocation logic
+│   │   │   └── memory_manager.h/cpp# Physical memory mapping (map_host_physical)
+│   │   ├── scan/              # Guest Memory Signature Scanning
+│   │   │   └── scan.h/cpp     # find_pattern(), find_function() via Guest CR3
+│   │   ├── slat/              # Second Level Address Translation (EPT)
+│   │   │   ├── slat.h/cpp     # set_up(), translate_guest_physical_address()
+│   │   │   ├── slat_def.h     # EPT structure definitions (PML4E, PDPTE, PDE, PTE)
+│   │   │   ├── cr3/           # Guest CR3 & Paging table manipulation
+│   │   │   │   ├── cr3.h/cpp  # set_up_slat_cr3(), get_guest_cr3()
+│   │   │   │   ├── deep_copy.h/cpp# Shadowing guest page tables for stealth
+│   │   │   │   ├── pte.h/cpp  # Page Table Entry (PTE) manipulation
+│   │   │   │   └── intel_invept.asm # Low-level INVEPT instruction wrapper
+│   │   │   └── hook/          # SLAT-based memory hooking
+│   │   │       ├── hook.h/cpp # set_up_entries(), process_slat_hook()
+│   │   │       ├── hook_entry.h/cpp # hook_t management & registration
+│   │   │       └── amd_page_split.h/cpp # Instruction fixing for page splits
+│   │   ├── violation/     # EPT violation handling
+│   │   │   └── violation.h/cpp# process() - Main EPT violation logic
+│   │   ├── structures/        # Common architectural structures
+│   │   │   └── virtual_address.h # Virtual address bitfield definitions
+│   │   ├── arch_config.h      # Compile-time architecture selection
+│   │   └── main.cpp           # Entry point for the hypervisor DLL
+│   └── hyperv-attachment.vcxproj
+│
+├── usermode/                  # User-mode Controller & CLI
+│   ├── src/
+│   │   ├── commands/          # CLI Command implementations
+│   │   │   └── commands.h/cpp # handle_command(), command dispatch logic
+│   │   ├── hook/              # Usermode side of hooking logic
+│   │   │   ├── hook.h/cpp     # setup_hook(), remove_hook()
+│   │   │   ├── hook_disassembly.h/cpp # Zydis-based instruction analysis
+│   │   │   └── kernel_detour_holder.h/cpp # Management of active kernel detours
+│   │   ├── hypercall/         # Communication with hypervisor
+│   │   │   ├── hypercall.h/cpp# invoke_hypercall() wrappers
+│   │   │   └── vmexit.asm     # VMCALL/CPUID hypercall trigger
+│   │   ├── system/            # System-level interactions
+│   │   │   ├── system.h/cpp   # Driver loading, process enumeration
+│   │   │   └── system_def.h   # System structure definitions (NTSTATUS, etc.)
+│   │   └── main.cpp           # CLI entry point
+│   ├── vcpkg/                 # Dependency management (Zydis, CLI11)
+│   └── usermode.vcxproj
+│
+├── uefi-boot/                 # UEFI Bootloader
+│   ├── src/
+│   │   ├── bootmgfw/          # Windows Boot Manager interception
+│   │   │   └── bootmgfw.h/c   # hook_bootmgfw(), load_hvloader()
+│   │   ├── disk/              # Disk I/O & File System access
+│   │   │   └── disk.h/c       # read_file(), get_disk_handle()
+│   │   ├── hooks/             # Boot-time hooking engine
+│   │   │   └── hooks.h/c      # install_uefi_hooks(), trampoline management
+│   │   ├── hvloader/          # Hypervisor DLL loader
+│   │   │   └── hvloader.h/c   # load_hypervisor_image(), manual_map_pe()
+│   │   ├── hyperv_attachment/ # Hypervisor integration logic
+│   │   │   └── hyperv_attachment.h/c # initialize_hypervisor(), setup_shared_data()
+│   │   ├── image/             # UEFI image loading & manipulation
+│   │   │   └── image.h/c      # get_image_base(), resolve_relocations()
+│   │   ├── memory_manager/    # UEFI-side memory allocation
+│   │   │   └── memory_manager.h/c # allocate_pages(), free_pages()
+│   │   ├── structures/        # UEFI/Windows shared structures
+│   │   │   ├── arc_types.h    # ARC_DISK_SIGNATURE, etc.
+│   │   │   ├── ntdef.h        # NT-style definitions for UEFI
+│   │   │   ├── relocation_entry.h # PE relocation structures
+│   │   │   └── virtual_address.h # Memory paging structures
+│   │   ├── winload/           # Windows Loader (winload.efi) monitoring
+│   │   │   └── winload.h/c    # hook_winload(), intercept_nt_loading()
+│   │   └── main.c             # Bootloader entry point (EfiMain)
+│   ├── ext/                   # External dependencies
+│   │   └── openssl/           # Minimal OpenSSL for cryptographic checks
+│   ├── uefi-boot.vcxproj
+│   └── uefi.props             # UEFI build properties
+│
+├── shared/                    # Shared Headers
+│   ├── hypercall/             # Shared Hypercall definitions
+│   │   └── hypercall_def.h    # Hypercall numbers & parameter structures
+│   ├── payload/               # Embedded Binary Payloads
+│   │   └── payload_bin.h      # dkom_image, etc. (Embedded PE files)
+│   └── structures/            # Shared data structures
+│       ├── memory_operation.h # guest_physical_memory_operation structures
+│       └── trap_frame.h       # trap_frame_t definition
+│
+├── images/                    # Documentation & Diagrams
+│   └── boot_process.png       # Hypervisor boot sequence diagram
+│
+├── hyper-reV.sln              # Main Visual Studio Solution
+├── _internal_build.cmd        # Build scripts
+├── build.bat                  # User-friendly build script
+├── build_agent_job.bat        # CI/CD build agent script
+└── load-hyper-reV.bat         # Loading script
+
+## Key Architectural Patterns
+- **SLAT-based Hooking**: Uses EPT (Extended Page Tables) to intercept memory access without modifying guest code directly, achieving high stealth.
+- **Deep Copy Paging**: Mirrors guest page tables in the VMM to allow modification of access rights without the guest's knowledge.
+- **NMI-based Execution**: Uses Non-Maskable Interrupts for reliable context switching and monitoring.
+- **Hypercall Communication**: Secure channel between usermode and hypervisor using custom CPUID-based hypercalls.
+- **Manual PE Mapping**: Custom loader for injecting and relocating images within the guest environment without standard API usage.
+- **Signature Scanning**: Direct guest virtual memory scanning using CR3 translation for locating unexported kernel symbols (e.g., MmAllocateIndependentPagesEx).
+- **Modular Memory Isolation**: Custom heap and physical memory mapping ensure the VMM operates in a completely isolated environment.
+- **Cross-Reference Scanning**: Identifies unexported kernel functions by scanning calls from exported ones (e.g., finding `IopLoadDriver` via `MmAllocateIndependentPagesEx` usage).
+- **Trap-and-Redirect Allocation**: Advanced stealth mechanism to invoke unexported kernel functions by hijacking guest execution flow via VMExit and register manipulation, bypassing standard pool monitoring.
+- **Atomic SLAT Synchronization**: Thread-safe page hiding mechanism using atomic operations (std::atomic) to prevent race conditions during early boot (Start1) concurrent execution.
+
+## Current Configuration
+- Platform: Intel VT-x (x64)
+- Core Logic: SLAT (EPT) Violation Handling
+- Stealth Mechanism: Shadow Page Tables & EPT Hidden Pages
+- Integrity Guard: 0x20001 (0x11) Error Mitigation via SLAT atomics
+
+## Module Dependencies (SLAT Focus)
+- **Hypercall -> SLAT**: `hypercall.cpp` directly invokes `slat::hook::add/remove` and `slat::hide_physical_page_from_guest`. It relies on `slat::hyperv_cr3()` for all memory translation operations.
+- **Violation -> SLAT**: `violation.cpp` processes EPT violations by querying the SLAT state and updating permissions/mappings via `slat::translate_guest_physical_address`.
+- **Core -> SLAT**: `core.cpp` initializes the SLAT system during `initialize()` and ensures cross-core consistency during VMExit dispatch.
