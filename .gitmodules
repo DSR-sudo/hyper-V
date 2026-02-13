@@ -5,3 +5,9 @@
 	path = uefi-boot/ext/openssl
 	url = https://github.com/openssl/openssl
 	branch = OpenSSL_1_1_0-stable
+[submodule "usermode/ext/CLI11"]
+	path = usermode/ext/CLI11
+	url = https://github.com/CLIUtils/CLI11.git
+[submodule "usermode/ext/zydis"]
+	path = usermode/ext/zydis
+	url = https://github.com/zyantific/zydis.git
