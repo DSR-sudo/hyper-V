@@ -1,174 +1,21 @@
-#include "arch/arch.h"
-#include "hypercall/hypercall.h"
-#include "hypercall/hypercall_def.h"
 #include "memory_manager/memory_manager.h"
 #include "memory_manager/heap_manager.h"
 #include "logs/logs.h"
-#include "structures/trap_frame.h"
 #include <ia32-doc/ia32.hpp>
 #include <cstdint>
-#include <intrin.h>
 
 #include "crt/crt.h"
-#include "interrupts/interrupts.h"
 #include "slat/slat.h"
-#include "slat/cr3/cr3.h"
-#include "slat/violation/violation.h"
-#include "loader/loader.h"
-
-typedef std::uint64_t(*vmexit_handler_t)(std::uint64_t a1, std::uint64_t a2, std::uint64_t a3, std::uint64_t a4);
+#include "runtime/vmexit_dispatch.h"
 
 namespace
 {
-    std::uint8_t* original_vmexit_handler = nullptr;
-    std::uint64_t uefi_boot_physical_base_address = 0;
-    std::uint64_t uefi_boot_image_size = 0;
-
     std::uint64_t g_image_base = 0;
     std::uint64_t g_image_size = 0;
     std::uint64_t g_text_start = 0;
     std::uint64_t g_text_end = 0;
     std::uint64_t g_data_start = 0;
     std::uint64_t g_data_end = 0;
-
-    // VMM Shadow Mapper: Guest ntoskrnl base address
-    // TODO: Obtain this from PsLoadedModuleList or Guest CR3 scan
-    std::uint64_t g_ntoskrnl_base = 0;
-}
-
-void clean_up_uefi_boot_image()
-{
-    const auto mapped_uefi_boot_base = static_cast<std::uint8_t*>(memory_manager::map_host_physical(uefi_boot_physical_base_address));
-    crt::set_memory(mapped_uefi_boot_base, 0, uefi_boot_image_size);
-}
-
-void process_first_vmexit()
-{
-    static std::uint8_t is_first_vmexit = 1;
-
-    if (is_first_vmexit == 1)
-    {
-        logs::print("[Runtime] First VMExit captured. Taking control...\n");
-        slat::process_first_vmexit();
-        interrupts::set_up();
-        clean_up_uefi_boot_image();
-
-        // [ARCHITECT] Verify secure kernel export resolution on first boot
-        if (g_ntoskrnl_base != 0) {
-            const uint64_t pool_api = loader::get_kernel_export(g_ntoskrnl_base, "ExAllocatePoolWithTag");
-            if (pool_api) {
-                logs::print("[Step 1] Success: ExAllocatePoolWithTag = 0x%p\n", pool_api);
-            } else {
-                logs::print("[Step 1] ERROR: Failed to resolve ExAllocatePoolWithTag from 0x%p\n", g_ntoskrnl_base);
-            }
-        }
-
-        is_first_vmexit = 0;
-    }
-
-    static uint8_t has_hidden_heap_pages = 0;
-    static uint64_t vmexit_count = 0;
-    
-    // VMM Shadow Mapper: Deployment state
-    static uint8_t dkom_deployed = 0;
-    static uint8_t rwbase_deployed = 0;
-    // [DEBUG] DISABLED: Set to MAX to prevent deployment while debugging crash
-    constexpr uint64_t DKOM_DEPLOY_THRESHOLD = UINT64_MAX;  // DISABLED for debugging
-    constexpr uint64_t HEAP_HIDE_THRESHOLD = UINT64_MAX;    // DISABLED for debugging
-
-    ++vmexit_count;
-
-    // Simplified: ntoskrnl_base is now received only from UEFI/uboot
-    // and is already stored in g_ntoskrnl_base.
-
-
-    // Stage 1: Deploy DKOM at 1.5M VMExits (before heap hiding)
-    if (dkom_deployed == 0 && vmexit_count >= DKOM_DEPLOY_THRESHOLD)
-    {
-        if (g_ntoskrnl_base != 0)
-        {
-            const auto result = loader::deploy_dkom_payload(g_ntoskrnl_base);
-            if (result == loader::deploy_result_t::success)
-            {
-                logs::print("[Loader] DKOM deployed successfully\n");
-                dkom_deployed = 1; // Only set on success
-            }
-            else
-            {
-                logs::print("[Loader] DKOM deployment failed: %d (will retry)\n", static_cast<uint32_t>(result));
-            }
-        }
-    }
-
-    // Stage 2: Hide heap pages at 2M VMExits
-    if (has_hidden_heap_pages == 0 && vmexit_count >= HEAP_HIDE_THRESHOLD)
-    {
-        has_hidden_heap_pages = slat::hide_heap_pages(slat::hyperv_cr3());
-
-        if (has_hidden_heap_pages == 1)
-        {
-            logs::print("[Runtime] Heap memory hiding complete (Total 2M VMExits threshold met).\n");
-            
-            // Stage 3: Deploy RWbase after heap hiding (START3 phase)
-            if (rwbase_deployed == 0 && g_ntoskrnl_base != 0)
-            {
-                logs::print("[Loader] RWbase deployment - START3 phase\n");
-                const auto result = loader::deploy_rwbase_payload(g_ntoskrnl_base);
-                if (result == loader::deploy_result_t::success)
-                {
-                    logs::print("[Loader] RWbase deployed with SLAT hiding\n");
-                    rwbase_deployed = 1; // Only set on success
-                }
-                else
-                {
-                    logs::print("[Loader] RWbase deployment failed: %d (will retry)\n", static_cast<uint32_t>(result));
-                }
-            }
-        }
-    }
-}
-
-std::uint64_t do_vmexit_premature_return()
-{
-    return 0; // Intel return
-}
-
-std::uint64_t vmexit_handler_detour(const std::uint64_t a1, const std::uint64_t a2, const std::uint64_t a3, const std::uint64_t a4)
-{
-    process_first_vmexit();
-
-    const std::uint64_t exit_reason = arch::get_vmexit_reason();
-
-    if (arch::is_cpuid(exit_reason) == 1)
-    {
-        trap_frame_t* const trap_frame = *reinterpret_cast<trap_frame_t**>(a1);
-
-        const hypercall_info_t hypercall_info = { .value = trap_frame->rcx };
-
-        if (hypercall_info.primary_key == hypercall_primary_key && hypercall_info.secondary_key == hypercall_secondary_key)
-        {
-            trap_frame->rsp = arch::get_guest_rsp();
-            hypercall::process(hypercall_info, trap_frame);
-            arch::set_guest_rsp(trap_frame->rsp);
-            arch::advance_guest_rip();
-            return do_vmexit_premature_return();
-        }
-    }
-    else if (arch::is_slat_violation(exit_reason) == 1 && slat::violation::process() == 1)
-    {
-        return do_vmexit_premature_return();
-    }
-    else if (arch::is_non_maskable_interrupt_exit(exit_reason) == 1)
-    {
-        interrupts::process_nmi();
-    }
-    else if (arch::is_mtf_exit(exit_reason) == 1)
-    {
-        slat::violation::handle_mtf();
-        return do_vmexit_premature_return();
-    }
-
-    return reinterpret_cast<vmexit_handler_t>(original_vmexit_handler)(a1, a2, a3, a4);
 }
 
 #pragma pack(push, 1)
@@ -228,6 +75,22 @@ struct image_section_header {
 };
 #pragma pack(pop)
 
+/**
+ * @description 模块入口，初始化堆、日志与 SLAT，并解析自身 PE 边界。
+ * @param {std::uint8_t** const} vmexit_handler_detour_out 输出 VMExit Detour 指针。
+ * @param {std::uint8_t* const} original_vmexit_handler_routine 原 VMExit 处理器地址。
+ * @param {const std::uint64_t} heap_physical_base 堆物理基址。
+ * @param {const std::uint64_t} heap_physical_usable_base 堆可用物理基址。
+ * @param {const std::uint64_t} heap_total_size 堆总大小。
+ * @param {const std::uint64_t} _uefi_boot_physical_base_address UEFI Boot 镜像物理基址。
+ * @param {const std::uint32_t} _uefi_boot_image_size UEFI Boot 镜像大小。
+ * @param {const std::uint64_t} reserved_one 预留参数（Intel）。
+ * @param {const std::uint64_t} ntoskrnl_base_from_uefi UEFI 传入的 ntoskrnl 基址。
+ * @return {void} 无返回值。
+ * @throws {无} 不抛出异常。
+ * @example
+ * entry_point(&detour_out, original_handler, heap_base, heap_usable, heap_size, uefi_base, uefi_size, 0, nt_base);
+ */
 void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* const original_vmexit_handler_routine, const std::uint64_t heap_physical_base, const std::uint64_t heap_physical_usable_base, const std::uint64_t heap_total_size, const std::uint64_t _uefi_boot_physical_base_address, const std::uint32_t _uefi_boot_image_size, const std::uint64_t reserved_one, const std::uint64_t ntoskrnl_base_from_uefi)
 {
     (void)reserved_one; // Intel Only
@@ -235,12 +98,14 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
     // Task 1.4: Receive ntoskrnl_base captured by uefi-boot from LoaderBlock
     if (ntoskrnl_base_from_uefi != 0)
     {
-        g_ntoskrnl_base = ntoskrnl_base_from_uefi;
+        // 业务说明：接收 UEFI 传入的 ntoskrnl 基址，供导出解析使用。
+        // 输入：ntoskrnl_base_from_uefi；输出：ntoskrnl_base 缓存；规则：仅非零时更新；异常：不抛出。
+        set_ntoskrnl_base(ntoskrnl_base_from_uefi);
     }
 
-    original_vmexit_handler = original_vmexit_handler_routine;
-    uefi_boot_physical_base_address = _uefi_boot_physical_base_address;
-    uefi_boot_image_size = _uefi_boot_image_size;
+    // 业务说明：记录 VMExit 处理器与 UEFI 镜像参数，完成全局初始化。
+    // 输入：入口参数；输出：VMExit 运行时状态；规则：仅入口阶段设置；异常：不抛出。
+    set_vmexit_runtime_state(original_vmexit_handler_routine, _uefi_boot_physical_base_address, _uefi_boot_image_size);
     heap_manager::initial_physical_base = heap_physical_base;
     heap_manager::initial_size = heap_total_size;
 
@@ -249,12 +114,18 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
     const std::uint64_t heap_physical_end = heap_physical_base + heap_total_size;
     const std::uint64_t heap_usable_size = heap_physical_end - heap_physical_usable_base;
 
+    // 业务说明：映射堆物理内存并初始化堆管理。
+    // 输入：堆物理基址与大小；输出：堆管理器可用；规则：映射成功后初始化；异常：不抛出。
     void* const mapped_heap_usable_base = memory_manager::map_host_physical(heap_physical_usable_base);
     heap_manager::set_up(mapped_heap_usable_base, heap_usable_size);
 
+    // 业务说明：初始化日志系统，为后续阶段输出状态。
+    // 输入：无；输出：日志系统可用；规则：入口阶段初始化；异常：不抛出。
     logs::set_up();
 
     // [ARCHITECT Phase 2] PE Parsing & Boundary Locking
+    // 业务说明：解析自身 PE 头与节区边界，记录镜像与代码/数据范围。
+    // 输入：映射后的镜像基址；输出：镜像与节区边界；规则：仅在签名合法时更新；异常：不抛出。
     const auto image_base = static_cast<std::uint8_t*>(memory_manager::map_host_physical(heap_physical_base));
     const auto dos_header = reinterpret_cast<image_dos_header*>(image_base);
 
@@ -263,6 +134,8 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
         const auto nt_headers = reinterpret_cast<image_nt_headers64*>(image_base + dos_header->e_lfanew);
         if (nt_headers->signature == 0x00004550)
         {
+            // 业务说明：记录镜像基址与镜像大小，供后续内存隐藏与保护策略使用。
+            // 输入：PE 头解析结果；输出：g_image_base/g_image_size；规则：仅在签名合法时更新；异常：不抛出。
             g_image_base = heap_physical_base;
             g_image_size = nt_headers->optional_header.size_of_image;
             
@@ -272,9 +145,9 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
             logs::print("[Init] Heap Physical Base: 0x%p, Size: 0x%p\n", heap_physical_base, heap_total_size);
             logs::print("[Init] UEFI Boot Physical Base: 0x%p, Size: 0x%x\n", _uefi_boot_physical_base_address, _uefi_boot_image_size);
             
-            if (g_ntoskrnl_base != 0)
+            if (get_ntoskrnl_base() != 0)
             {
-                logs::print("[Task 1.4] ntoskrnl_base received from UEFI: 0x%p\n", g_ntoskrnl_base);
+                logs::print("[Task 1.4] ntoskrnl_base received from UEFI: 0x%p\n", get_ntoskrnl_base());
             }
             else
             {
@@ -286,6 +159,8 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
 
             for (std::uint32_t i = 0; i < nt_headers->file_header.number_of_sections; i++)
             {
+                // 业务说明：遍历节区记录范围，定位 .text/.data 边界。
+                // 输入：节区表；输出：g_text_start/g_text_end/g_data_start/g_data_end；规则：名称匹配才更新；异常：不抛出。
                 const auto& section = section_header[i];
                 char section_name[9] = { 0 };
                 crt::copy_memory(section_name, section.name, 8);
@@ -301,6 +176,8 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
                     crt::abs(static_cast<std::int32_t>(section.name[3] - 'x')) == 0 && 
                     crt::abs(static_cast<std::int32_t>(section.name[4] - 't')) == 0)
                 {
+                    // 业务说明：识别 .text 节并记录其物理范围。
+                    // 输入：section；输出：g_text_start/g_text_end；规则：名称匹配 .text；异常：不抛出。
                     g_text_start = heap_physical_base + section.virtual_address;
                     g_text_end = g_text_start + section.virtual_size;
                 }
@@ -310,6 +187,8 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
                          crt::abs(static_cast<std::int32_t>(section.name[3] - 't')) == 0 && 
                          crt::abs(static_cast<std::int32_t>(section.name[4] - 'a')) == 0)
                 {
+                    // 业务说明：识别 .data 节并记录其物理范围。
+                    // 输入：section；输出：g_data_start/g_data_end；规则：名称匹配 .data；异常：不抛出。
                     g_data_start = heap_physical_base + section.virtual_address;
                     g_data_end = g_data_start + section.virtual_size;
                 }
@@ -321,6 +200,8 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
         logs::print("[WARNING] PE Parsing failed! Image base not found.\n");
     }
 
+    // 业务说明：初始化 SLAT 子系统，完成内存虚拟化准备。
+    // 输入：无；输出：SLAT 可用；规则：入口阶段初始化；异常：不抛出。
     slat::set_up();
     logs::print("[Init] Component setup complete (Logs, SLAT).\n");
 }

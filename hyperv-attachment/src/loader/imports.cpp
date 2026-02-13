@@ -18,8 +18,19 @@ namespace loader {
 // String Utilities (No CRT)
 // =============================================================================
 
+/**
+ * @description 比较两个字符串（区分大小写）。
+ * @param {const char*} s1 字符串 1。
+ * @param {const char*} s2 字符串 2。
+ * @return {int} 比较结果差值。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto diff = str_compare("a", "b");
+ */
 int str_compare(const char* s1, const char* s2)
 {
+    // 业务说明：逐字符比较，直到出现不同或结束。
+    // 输入：s1/s2；输出：差值；规则：字节比较；异常：不抛出。
     while (*s1 && (*s1 == *s2)) {
         s1++;
         s2++;
@@ -28,8 +39,19 @@ int str_compare(const char* s1, const char* s2)
            *reinterpret_cast<const unsigned char*>(s2);
 }
 
+/**
+ * @description 比较两个字符串（忽略大小写）。
+ * @param {const char*} s1 字符串 1。
+ * @param {const char*} s2 字符串 2。
+ * @return {int} 比较结果差值。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto diff = str_compare_insensitive("A", "a");
+ */
 int str_compare_insensitive(const char* s1, const char* s2)
 {
+    // 业务说明：将字符归一化为小写后比较。
+    // 输入：s1/s2；输出：差值；规则：逐字符比较；异常：不抛出。
     while (*s1 && *s2) {
         char c1 = *s1;
         char c2 = *s2;
@@ -51,8 +73,19 @@ int str_compare_insensitive(const char* s1, const char* s2)
 // Export Table Resolution (Secure Guest Access)
 // =============================================================================
 
+/**
+ * @description 从内核模块导出表解析指定函数地址。
+ * @param {const uint64_t} module_base 内核模块基址。
+ * @param {const char*} function_name 目标函数名。
+ * @return {uint64_t} 函数地址，失败返回 0。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto addr = get_kernel_export(ntoskrnl_base, "ExAllocatePool");
+ */
 uint64_t get_kernel_export(const uint64_t module_base, const char* function_name)
 {
+    // 业务说明：通过来宾内存读取导出表并匹配函数名。
+    // 输入：module_base/function_name；输出：函数地址；规则：仅支持非转发导出；异常：不抛出。
     if (!module_base || !function_name) {
         return 0;
     }
@@ -61,6 +94,8 @@ uint64_t get_kernel_export(const uint64_t module_base, const char* function_name
     const cr3 guest_cr3 = arch::get_guest_cr3();
     const cr3 slat_cr3 = slat::hyperv_cr3();
 
+    // 业务说明：封装来宾虚拟内存读取操作。
+    // 输入：gva/buf/size；输出：读取结果；规则：读满才成功；异常：不抛出。
     // Helper: read from Guest virtual memory
     auto read_guest = [&](uint64_t gva, void* buf, uint64_t size) -> bool {
         return memory_manager::operate_on_guest_virtual_memory(
@@ -68,33 +103,38 @@ uint64_t get_kernel_export(const uint64_t module_base, const char* function_name
         ) == size;
     };
 
-    // 1. Read DOS Header
+    // 业务说明：读取并校验 DOS 头。
+    // 输入：module_base；输出：dos_header；规则：签名必须匹配；异常：不抛出。
     image_dos_header_t dos_header;
     if (!read_guest(module_base, &dos_header, sizeof(dos_header)) || 
         dos_header.e_magic != IMAGE_DOS_SIGNATURE) {
         return 0;
     }
 
-    // 2. Read NT Headers
+    // 业务说明：读取并校验 NT 头。
+    // 输入：module_base；输出：nt_headers；规则：签名必须匹配；异常：不抛出。
     image_nt_headers64_t nt_headers;
     if (!read_guest(module_base + dos_header.e_lfanew, &nt_headers, sizeof(nt_headers)) ||
         nt_headers.signature != IMAGE_NT_SIGNATURE) {
         return 0;
     }
 
-    // 3. Get Export Directory RVA and Size
+    // 业务说明：获取导出表目录信息。
+    // 输入：nt_headers；输出：export_dir_entry；规则：无导出表返回失败；异常：不抛出。
     const auto& export_dir_entry = nt_headers.optional_header.data_directory[IMAGE_DIRECTORY_ENTRY_EXPORT];
     if (export_dir_entry.virtual_address == 0 || export_dir_entry.size == 0) {
         return 0;
     }
 
-    // 4. Read Export Directory
+    // 业务说明：读取导出表头结构。
+    // 输入：module_base/export_dir_entry；输出：export_dir；规则：读取失败返回 0；异常：不抛出。
     image_export_directory_t export_dir;
     if (!read_guest(module_base + export_dir_entry.virtual_address, &export_dir, sizeof(export_dir))) {
         return 0;
     }
 
-    // 5. Read Export Tables
+    // 业务说明：遍历导出名称表并解析目标函数。
+    // 输入：export_dir；输出：函数地址；规则：名称匹配返回地址；异常：不抛出。
     // Local buffers for table addresses
     const uint64_t names_va = module_base + export_dir.address_of_names;
     const uint64_t ordinals_va = module_base + export_dir.address_of_name_ordinals;
@@ -113,6 +153,8 @@ uint64_t get_kernel_export(const uint64_t module_base, const char* function_name
         }
 
         if (str_compare_insensitive(current_name, function_name) == 0) {
+            // 业务说明：名称匹配后按序号表解析函数 RVA。
+            // 输入：names/ordinals/functions；输出：函数地址；规则：不支持转发导出；异常：不抛出。
             uint16_t ordinal = 0;
             if (!read_guest(ordinals_va + i * sizeof(uint16_t), &ordinal, sizeof(uint16_t))) {
                 return 0;
@@ -126,6 +168,8 @@ uint64_t get_kernel_export(const uint64_t module_base, const char* function_name
             // Check for forwarded export (RVA within export directory range)
             if (function_rva >= export_dir_entry.virtual_address &&
                 function_rva < export_dir_entry.virtual_address + export_dir_entry.size) {
+                // 业务说明：转发导出暂不支持，直接返回失败。
+                // 输入：function_rva；输出：日志；规则：返回 0；异常：不抛出。
                 logs::print("[Loader] Warning: Forwarded export '%s' not supported\n", function_name);
                 return 0;
             }
@@ -141,21 +185,34 @@ uint64_t get_kernel_export(const uint64_t module_base, const char* function_name
 // Import Resolution
 // =============================================================================
 
+/**
+ * @description 解析并修复 Payload 的导入表。
+ * @param {void*} payload_image Payload 镜像基址。
+ * @param {const uint64_t} ntoskrnl_base ntoskrnl 基址。
+ * @return {bool} 是否解析成功。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto ok = resolve_payload_imports(image, nt_base);
+ */
 bool resolve_payload_imports(void* payload_image, const uint64_t ntoskrnl_base)
 {
+    // 业务说明：遍历导入表，解析模块与函数并写入 IAT。
+    // 输入：payload_image/ntoskrnl_base；输出：解析结果；规则：无法解析则失败；异常：不抛出。
     if (!payload_image || !ntoskrnl_base) {
         logs::print("[Loader] resolve_imports: Invalid parameters\n");
         return false;
     }
 
-    // Get NT headers
+    // 业务说明：读取并验证 NT 头。
+    // 输入：payload_image；输出：nt_headers；规则：无效返回失败；异常：不抛出。
     const auto nt_headers = get_nt_headers(payload_image);
     if (!nt_headers) {
         logs::print("[Loader] resolve_imports: Invalid PE headers\n");
         return false;
     }
 
-    // Get import directory
+    // 业务说明：读取导入表目录。
+    // 输入：nt_headers；输出：import_dir；规则：无导入表直接成功；异常：不抛出。
     const auto& import_dir = nt_headers->optional_header.data_directory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if (!import_dir.virtual_address) {
         // No imports - valid for some drivers
@@ -165,7 +222,8 @@ bool resolve_payload_imports(void* payload_image, const uint64_t ntoskrnl_base)
 
     const uint64_t image_base = reinterpret_cast<uint64_t>(payload_image);
 
-    // Walk import descriptors
+    // 业务说明：遍历导入描述符并解析模块。
+    // 输入：import_descriptor；输出：modules_resolved/functions_resolved；规则：按模块逐一解析；异常：不抛出。
     auto import_descriptor = reinterpret_cast<image_import_descriptor_t*>(
         image_base + import_dir.virtual_address
     );
@@ -181,11 +239,13 @@ bool resolve_payload_imports(void* payload_image, const uint64_t ntoskrnl_base)
 
         logs::print("[Loader] Resolving imports from: %s\n", module_name);
 
-        // Determine which module to search
+        // 业务说明：确定导入模块的解析基址。
+        // 输入：module_name；输出：resolve_module_base；规则：特定模块有固定策略；异常：不抛出。
         uint64_t resolve_module_base = 0;
         bool module_resolved = false;
 
-        // Check for specific modules
+        // 业务说明：对关键模块采用特定解析策略。
+        // 输入：module_name；输出：resolve_module_base；规则：必要模块必须找到；异常：不抛出。
         if (str_compare_insensitive(module_name, "ntoskrnl.exe") == 0 ||
             str_compare_insensitive(module_name, "ntkrnlmp.exe") == 0 ||
             str_compare_insensitive(module_name, "ntkrnlpa.exe") == 0 ||
@@ -254,7 +314,8 @@ bool resolve_payload_imports(void* payload_image, const uint64_t ntoskrnl_base)
             }
         }
 
-        // Get IAT and INT (or hint table)
+        // 业务说明：定位 IAT 与 INT 并遍历导入函数。
+        // 输入：import_descriptor；输出：first_thunk/original_first_thunk；规则：无原始表则用 IAT；异常：不抛出。
         auto first_thunk = reinterpret_cast<image_thunk_data64_t*>(
             image_base + import_descriptor->first_thunk
         );
@@ -263,7 +324,8 @@ bool resolve_payload_imports(void* payload_image, const uint64_t ntoskrnl_base)
             ? reinterpret_cast<image_thunk_data64_t*>(image_base + import_descriptor->original_first_thunk)
             : first_thunk;
 
-        // Walk thunks
+        // 业务说明：解析导入函数并写入 IAT。
+        // 输入：thunks；输出：IAT 更新；规则：不支持序号导入；异常：不抛出。
         while (original_first_thunk->u1.address_of_data) {
             // Check if import by ordinal (high bit set)
             if (original_first_thunk->u1.ordinal & (1ULL << 63)) {
@@ -278,7 +340,8 @@ bool resolve_payload_imports(void* payload_image, const uint64_t ntoskrnl_base)
 
             const char* func_name = import_by_name->name;
             
-            // Resolve the function
+            // 业务说明：解析函数地址，必要时回退到 ntoskrnl。
+            // 输入：resolve_module_base/func_name；输出：function_address；规则：解析失败返回错误；异常：不抛出。
             uint64_t function_address = get_kernel_export(resolve_module_base, func_name);
 
             // If not found and we're not already using ntoskrnl, try ntoskrnl as last resort
@@ -294,12 +357,15 @@ bool resolve_payload_imports(void* payload_image, const uint64_t ntoskrnl_base)
             }
 
             if (!function_address) {
+                // 业务说明：无法解析导入时终止加载。
+                // 输入：module_name/func_name；输出：错误日志；规则：返回 false；异常：不抛出。
                 logs::print("[Loader] ERROR: Failed to resolve import: %s!%s\n", 
                     module_name, func_name);
                 return false;
             }
 
-            // Write resolved address to IAT
+            // 业务说明：写入解析后的函数地址到 IAT。
+            // 输入：function_address；输出：IAT 更新；规则：直接赋值；异常：不抛出。
             first_thunk->u1.function = function_address;
             functions_resolved++;
 

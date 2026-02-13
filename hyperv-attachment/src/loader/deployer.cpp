@@ -39,8 +39,27 @@ struct allocation_info_t {
 // Payload Validation
 // =============================================================================
 
+/**
+ * @brief Validates if the given payload is a valid PE executable
+ * 
+ * @param data Pointer to the payload data
+ * @param size Size of the payload data in bytes
+ * @return true If the payload is a valid PE executable
+ * @return false If the payload is not a valid PE executable
+ */
+/**
+ * @description 校验 Payload 是否为合法 PE64 镜像。
+ * @param {const unsigned char*} data Payload 数据指针。
+ * @param {const size_t} size Payload 数据大小。
+ * @return {bool} 是否为合法 PE64。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto ok = validate_payload(payload, size);
+ */
 bool validate_payload(const unsigned char* data, const size_t size)
 {
+    // 业务说明：验证 DOS/NT 头签名与可选头格式。
+    // 输入：data/size；输出：校验结果；规则：任一校验失败返回 false；异常：不抛出。
     if (!data || size < sizeof(image_dos_header_t)) {
         return false;
     }
@@ -66,8 +85,18 @@ bool validate_payload(const unsigned char* data, const size_t size)
     return true;
 }
 
+/**
+ * @description 判断内置 Payload 是否已准备就绪。
+ * @param {void} 无。
+ * @return {bool} 是否准备就绪。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto ready = is_payload_ready();
+ */
 bool is_payload_ready()
 {
+    // 业务说明：验证 DKOM 与 RWbase 两个 Payload 的 PE 合法性。
+    // 输入：无；输出：是否就绪；规则：两者都合法才返回 true；异常：不抛出。
     return validate_payload(payload::dkom_image, payload::dkom_image_size) &&
            validate_payload(payload::rwbase_image, payload::rwbase_image_size);
 }
@@ -76,8 +105,31 @@ bool is_payload_ready()
 // Payload Info Logging
 // =============================================================================
 
+/**
+ * @brief Prints detailed information about a payload
+ * 
+ * This function logs various properties of the payload, including its size,
+ * image base, entry point, and section count. If the payload is a valid PE
+ * file, it also logs the first 64 bytes of the payload for integrity checking.
+ * 
+ * @param name Name of the payload (e.g., "DKOM" or "RWbase")
+ * @param data Pointer to the payload data
+ * @param size Size of the payload data in bytes
+ */
+/**
+ * @description 打印 Payload 的关键信息与摘要。
+ * @param {const char*} name Payload 名称。
+ * @param {const unsigned char*} data Payload 数据指针。
+ * @param {const size_t} size Payload 数据大小。
+ * @return {void} 无返回值。
+ * @throws {无} 不抛出异常。
+ * @example
+ * print_payload_info("DKOM", payload, size);
+ */
 void print_payload_info(const char* name, const unsigned char* data, const size_t size)
 {
+    // 业务说明：解析 PE 头并输出镜像大小、入口点与摘要数据。
+    // 输入：name/data/size；输出：日志；规则：非法 PE 直接返回；异常：不抛出。
     logs::print("[Loader] === %s Payload Info ===\n", name);
     logs::print("[Loader]   Size: %d bytes\n", size);
 
@@ -115,10 +167,30 @@ void print_payload_info(const char* name, const unsigned char* data, const size_
 
 // Allocate memory in Guest physical space and map to VMM for modification
 // Returns both the Guest kernel VA (for relocations) and VMM pointer (for writes)
+/**
+ * @brief Allocate memory in Guest physical space and map to VMM for modification
+ * 
+ * @param size Requested allocation size in bytes
+ * @param out_info Output structure containing allocation info
+ * @return true If allocation and mapping succeeded
+ * @return false If allocation or mapping failed
+ */
+/**
+ * @description 为 Payload 分配来宾可访问的物理内存并映射到 VMM。
+ * @param {const uint32_t} size 申请大小（字节）。
+ * @param {allocation_info_t*} out_info 输出分配信息。
+ * @return {bool} 是否分配成功。
+ * @throws {无} 不抛出异常。
+ * @example
+ * allocation_info_t info{};
+ * const auto ok = allocate_guest_memory(size, &info);
+ */
 static bool allocate_guest_memory(
     const uint32_t size,
     allocation_info_t* out_info)
 {
+    // 业务说明：从 VMM 堆分配连续页，并计算来宾物理/虚拟地址。
+    // 输入：size/out_info；输出：分配信息；规则：任一步失败返回 false；异常：不抛出。
     if (!out_info) {
         return false;
     }
@@ -195,8 +267,29 @@ static bool allocate_guest_memory(
 // Section Mapping
 // =============================================================================
 
+/**
+ * @brief Maps sections from source to destination memory
+ * 
+ * @param dest Destination memory address (Guest VA)
+ * @param src Source memory address (VMM mapped)
+ * @param src_size Size of source memory in bytes
+ * @return true If mapping was successful
+ * @return false If mapping failed (e.g., bounds check failed)
+ */
+/**
+ * @description 将 PE 各节区映射到目标地址。
+ * @param {void*} dest 目标地址（VMM 可写）。
+ * @param {const unsigned char*} src 源镜像数据。
+ * @param {const size_t} src_size 源镜像大小。
+ * @return {bool} 是否映射成功。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto ok = map_sections(dest, image, size);
+ */
 static bool map_sections(void* dest, const unsigned char* src, const size_t src_size)
 {
+    // 业务说明：拷贝 PE 头与节区数据，并对齐填充。
+    // 输入：dest/src/src_size；输出：映射结果；规则：越界校验失败返回 false；异常：不抛出。
     const auto dos = reinterpret_cast<const image_dos_header_t*>(src);
     const auto nt = reinterpret_cast<const image_nt_headers64_t*>(src + dos->e_lfanew);
     
@@ -248,16 +341,38 @@ static bool map_sections(void* dest, const unsigned char* src, const size_t src_
 // SLAT Page Hiding
 // =============================================================================
 
+/**
+ * @brief Hides pages in Guest memory using SLAT (Second Level Address Translation)
+ * 
+ * This function modifies the SLAT entries for the specified pages to make them
+ * non-accessible from the Guest's view. It's used to hide pages from RWbase
+ * protections.
+ * 
+ * @param guest_physical The physical address of the first page to hide
+ * @param size The total size of the memory region to hide (in bytes)
+ * @return true If the pages were successfully hidden
+ * @return false If there was an error hiding the pages
+ */
+/**
+ * @description 通过 SLAT 隐藏指定物理页区域。
+ * @param {const uint64_t} guest_physical 来宾物理基址。
+ * @param {const uint32_t} size 隐藏大小（字节）。
+ * @return {bool} 是否隐藏成功。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto ok = hide_pages_via_slat(guest_pa, size);
+ */
 static bool hide_pages_via_slat(const uint64_t guest_physical, const uint32_t size)
 {
+    // 业务说明：按页计算数量并进行 SLAT 隐藏处理。
+    // 输入：guest_physical/size；输出：隐藏结果；规则：当前为占位实现；异常：不抛出。
     const uint32_t page_count = (size + 0xFFF) / 0x1000;
     
     logs::print("[Loader] Hiding %d pages via SLAT (PA: 0x%p)\n", page_count, guest_physical);
 
     // Use slat::hide_heap_pages or a similar mechanism
     // For RWbase, we need No-Execute / No-Read-Write in Guest view
-    // The VMM retains full access through the hypervisor CR3
-    
+    //
     // TODO: Implement per-page SLAT manipulation
     // This requires modifying EPT entries for these physical pages:
     // - Clear Read, Write, Execute bits in Guest EPT view
@@ -279,8 +394,18 @@ static bool hide_pages_via_slat(const uint64_t guest_physical, const uint32_t si
 // DKOM Deployment
 // =============================================================================
 
+/**
+ * @description 部署 DKOM Payload 并准备执行环境。
+ * @param {const uint64_t} ntoskrnl_base 来宾 ntoskrnl 基址。
+ * @return {deploy_result_t} 部署结果。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto result = deploy_dkom_payload(nt_base);
+ */
 deploy_result_t deploy_dkom_payload(const uint64_t ntoskrnl_base)
 {
+    // 业务说明：完成 DKOM Payload 的验证、分配、映射与重定位导入处理。
+    // 输入：ntoskrnl_base；输出：部署结果；规则：任一步失败返回对应错误；异常：不抛出。
     logs::print("[Loader] ========================================\n");
     logs::print("[Loader] DKOM Payload Deployment Starting\n");
     logs::print("[Loader] ========================================\n");
@@ -375,14 +500,41 @@ deploy_result_t deploy_dkom_payload(const uint64_t ntoskrnl_base)
 // RWbase Deployment
 // =============================================================================
 
+/**
+ * @brief Deploys the RWbase payload to the guest VM.
+ * 
+ * This function initializes the guest discovery, validates the RWbase payload,
+ * allocates guest memory, maps the payload sections, and prepares the payload
+ * for execution.
+ * 
+ * @param ntoskrnl_base The base address of the ntoskrnl module in the guest VM.
+ * @return deploy_result_t The result of the deployment operation.
+ */
+/**
+ * @description 部署 RWbase Payload 并进行 SLAT 隐藏。
+ * @param {const uint64_t} ntoskrnl_base 来宾 ntoskrnl 基址。
+ * @return {deploy_result_t} 部署结果。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto result = deploy_rwbase_payload(nt_base);
+ */
 deploy_result_t deploy_rwbase_payload(const uint64_t ntoskrnl_base)
 {
+    // 业务说明：完成 RWbase Payload 的验证、分配、映射、重定位导入处理并隐藏页。
+    // 输入：ntoskrnl_base；输出：部署结果；规则：失败返回错误码；异常：不抛出。
     logs::print("[Loader] ========================================\n");
     logs::print("[Loader] RWbase Payload Deployment Starting\n");
     logs::print("[Loader] ========================================\n");
 
     // Initialize Guest discovery
     if (!g_module_cache.initialized) {
+        /**
+         * @brief Initialize Guest discovery for RWbase payload deployment
+         * 
+         * @param ntoskrnl_base Base address of ntoskrnl in Guest physical space
+         * @return true If discovery initialization succeeded
+         * @return false If discovery initialization failed
+         */
         set_discovery_slat_cr3(slat::hyperv_cr3());
         set_discovery_cr3(arch::get_guest_cr3());
         if (!init_guest_discovery(ntoskrnl_base)) {

@@ -177,6 +177,8 @@
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\memory_manager\heap_manager.cpp" />
     <ClCompile Include="src\memory_manager\memory_manager.cpp" />
+    <ClCompile Include="src\runtime\payload_validation.cpp" />
+    <ClCompile Include="src\runtime\vmexit_dispatch.cpp" />
     <ClCompile Include="src\slat\hook\amd_page_split.cpp" />
     <ClCompile Include="src\slat\hook\hook.cpp" />
     <ClCompile Include="src\slat\hook\hook_entry.cpp" />
@@ -185,11 +187,8 @@
     <ClCompile Include="src\slat\cr3\deep_copy.cpp" />
     <ClCompile Include="src\slat\cr3\pte.cpp" />
     <ClCompile Include="src\slat\violation\violation.cpp" />
-    <ClCompile Include="src\loader\cookie.cpp" />
-    <ClCompile Include="src\loader\deployer.cpp" />
     <ClCompile Include="src\loader\guest.cpp" />
     <ClCompile Include="src\loader\imports.cpp" />
-    <ClCompile Include="src\loader\reloc.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\apic\apic.h" />
@@ -205,6 +204,8 @@
     <ClInclude Include="src\logs\logs.h" />
     <ClInclude Include="src\memory_manager\heap_manager.h" />
     <ClInclude Include="src\memory_manager\memory_manager.h" />
+    <ClInclude Include="src\runtime\payload_validation.h" />
+    <ClInclude Include="src\runtime\vmexit_dispatch.h" />
     <ClInclude Include="src\slat\hook\amd_page_split.h" />
     <ClInclude Include="src\slat\hook\hook_entry.h" />
     <ClInclude Include="src\slat\hook\hook.h" />

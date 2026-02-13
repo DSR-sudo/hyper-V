@@ -27,19 +27,59 @@ namespace {
 // Guest Context Management
 // =============================================================================
 
+/**
+ * @description 设置来宾发现流程的 CR3。
+ * @param {cr3} guest_cr3 来宾 CR3。
+ * @return {void} 无返回值。
+ * @throws {无} 不抛出异常。
+ * @example
+ * set_discovery_cr3(cr3_value);
+ */
 void set_discovery_cr3(cr3 guest_cr3) {
+    // 业务说明：缓存来宾 CR3 供后续内存读取使用。
+    // 输入：guest_cr3；输出：g_guest_cr3 更新；规则：直接赋值；异常：不抛出。
     g_guest_cr3 = guest_cr3;
 }
 
+/**
+ * @description 设置发现流程的 SLAT CR3。
+ * @param {cr3} slat_cr3 SLAT CR3。
+ * @return {void} 无返回值。
+ * @throws {无} 不抛出异常。
+ * @example
+ * set_discovery_slat_cr3(cr3_value);
+ */
 void set_discovery_slat_cr3(cr3 slat_cr3) {
+    // 业务说明：缓存 SLAT CR3 供来宾内存读取使用。
+    // 输入：slat_cr3；输出：g_slat_cr3 更新；规则：直接赋值；异常：不抛出。
     g_slat_cr3 = slat_cr3;
 }
 
+/**
+ * @description 获取发现流程使用的来宾 CR3。
+ * @param {void} 无。
+ * @return {cr3} 来宾 CR3。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto cr3_value = get_discovery_cr3();
+ */
 cr3 get_discovery_cr3() {
+    // 业务说明：返回当前缓存的来宾 CR3。
+    // 输入：无；输出：g_guest_cr3；规则：直接返回；异常：不抛出。
     return g_guest_cr3;
 }
 
+/**
+ * @description 获取发现流程使用的 SLAT CR3。
+ * @param {void} 无。
+ * @return {cr3} SLAT CR3。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto cr3_value = get_discovery_slat_cr3();
+ */
 cr3 get_discovery_slat_cr3() {
+    // 业务说明：返回当前缓存的 SLAT CR3。
+    // 输入：无；输出：g_slat_cr3；规则：直接返回；异常：不抛出。
     return g_slat_cr3;
 }
 
@@ -47,8 +87,22 @@ cr3 get_discovery_slat_cr3() {
 // Memory Read Helper
 // =============================================================================
 
+/**
+ * @description 读取来宾虚拟内存到缓冲区（显式 CR3）。
+ * @param {uint64_t} guest_va 来宾虚拟地址。
+ * @param {void*} buffer 输出缓冲区。
+ * @param {uint64_t} size 读取大小。
+ * @param {cr3} guest_cr3 来宾 CR3。
+ * @param {cr3} slat_cr3 SLAT CR3。
+ * @return {bool} 是否读取成功。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto ok = read_guest_memory_explicit(gva, buf, size, guest_cr3, slat_cr3);
+ */
 bool read_guest_memory_explicit(uint64_t guest_va, void* buffer, uint64_t size, cr3 guest_cr3, cr3 slat_cr3)
 {
+    // 业务说明：校验 CR3 并通过内存管理器读取来宾内存。
+    // 输入：guest_va/buffer/size/guest_cr3/slat_cr3；输出：读取结果；规则：读满才成功；异常：不抛出。
     if (slat_cr3.flags == 0 || guest_cr3.flags == 0) {
         return false;
     }
@@ -65,8 +119,20 @@ bool read_guest_memory_explicit(uint64_t guest_va, void* buffer, uint64_t size, 
     return bytes_read == size;
 }
 
+/**
+ * @description 读取来宾虚拟内存（使用缓存 CR3）。
+ * @param {uint64_t} guest_va 来宾虚拟地址。
+ * @param {void*} buffer 输出缓冲区。
+ * @param {uint64_t} size 读取大小。
+ * @return {bool} 是否读取成功。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto ok = read_guest_memory(gva, buf, size);
+ */
 static bool read_guest_memory(uint64_t guest_va, void* buffer, uint64_t size)
 {
+    // 业务说明：使用缓存的 CR3 读取来宾内存。
+    // 输入：guest_va/buffer/size；输出：读取结果；规则：内部调用显式读取；异常：不抛出。
     return read_guest_memory_explicit(guest_va, buffer, size, g_guest_cr3, g_slat_cr3);
 }
 
@@ -103,8 +169,18 @@ struct ldr_data_table_entry_t {
 };
 #pragma pack(pop)
 
+/**
+ * @description 获取 PsLoadedModuleList 在来宾内核中的地址。
+ * @param {uint64_t} ntoskrnl_base ntoskrnl 基址。
+ * @return {uint64_t} PsLoadedModuleList 地址，失败返回 0。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto list = get_ps_loaded_module_list(nt_base);
+ */
 uint64_t get_ps_loaded_module_list(uint64_t ntoskrnl_base)
 {
+    // 业务说明：通过导出表解析 PsLoadedModuleList。
+    // 输入：ntoskrnl_base；输出：导出地址；规则：base 为空返回 0；异常：不抛出。
     if (!ntoskrnl_base) {
         return 0;
     }
@@ -117,8 +193,21 @@ uint64_t get_ps_loaded_module_list(uint64_t ntoskrnl_base)
 // Module Enumeration
 // =============================================================================
 
+/**
+ * @description 将来宾内存中的宽字符转换为 ASCII。
+ * @param {uint64_t} wchar_buffer 宽字符缓冲区地址。
+ * @param {uint16_t} length 字符串字节长度。
+ * @param {char*} out_ascii 输出 ASCII 缓冲区。
+ * @param {uint32_t} out_size 输出缓冲区大小。
+ * @return {bool} 是否转换成功。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto ok = wchar_to_ascii(wchar_addr, len, buf, buf_size);
+ */
 static bool wchar_to_ascii(uint64_t wchar_buffer, uint16_t length, char* out_ascii, uint32_t out_size)
 {
+    // 业务说明：按字符读取来宾宽字符并截断为 ASCII。
+    // 输入：wchar_buffer/length/out_ascii/out_size；输出：ASCII 字符串；规则：读失败填 '?'；异常：不抛出。
     if (!wchar_buffer || length == 0 || !out_ascii || out_size == 0) {
         return false;
     }
@@ -140,8 +229,19 @@ static bool wchar_to_ascii(uint64_t wchar_buffer, uint16_t length, char* out_asc
     return true;
 }
 
+/**
+ * @description 遍历来宾已加载模块并执行回调。
+ * @param {bool (*)(const guest_module_info_t*, void*)} callback 回调函数。
+ * @param {void*} context 回调上下文。
+ * @return {uint32_t} 遍历到的模块数量。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto count = enumerate_guest_modules(cb, ctx);
+ */
 uint32_t enumerate_guest_modules(bool (*callback)(const guest_module_info_t* info, void* context), void* context)
 {
+    // 业务说明：遍历 PsLoadedModuleList 并构造模块信息。
+    // 输入：callback/context；输出：模块数量；规则：最多 256 个；异常：不抛出。
     if (!g_module_cache.ntoskrnl_base) {
         logs::print("[Guest] Cannot enumerate: ntoskrnl not found\n");
         return 0;
@@ -200,8 +300,19 @@ struct find_module_ctx_t {
     bool found;
 };
 
+/**
+ * @description 模块查找回调，匹配名称后返回结果。
+ * @param {const guest_module_info_t*} info 模块信息。
+ * @param {void*} context 查找上下文。
+ * @return {bool} 是否继续遍历。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto cont = find_module_callback(info, &ctx);
+ */
 static bool find_module_callback(const guest_module_info_t* info, void* context)
 {
+    // 业务说明：比较模块名称并在匹配时终止遍历。
+    // 输入：info/context；输出：是否继续；规则：匹配即返回 false；异常：不抛出。
     auto* ctx = static_cast<find_module_ctx_t*>(context);
 
     if (str_compare_insensitive(info->name, ctx->search_name) == 0) {
@@ -213,8 +324,19 @@ static bool find_module_callback(const guest_module_info_t* info, void* context)
     return true;  // Continue
 }
 
+/**
+ * @description 在来宾模块列表中查找指定模块。
+ * @param {const char*} module_name 模块名称。
+ * @param {guest_module_info_t*} out_info 输出模块信息。
+ * @return {bool} 是否找到。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto ok = find_guest_module("ntoskrnl.exe", &info);
+ */
 bool find_guest_module(const char* module_name, guest_module_info_t* out_info)
 {
+    // 业务说明：先查缓存，再遍历 PsLoadedModuleList。
+    // 输入：module_name/out_info；输出：模块信息；规则：命中缓存直接返回；异常：不抛出。
     if (!module_name || !out_info) {
         return false;
     }
@@ -260,8 +382,18 @@ bool find_guest_module(const char* module_name, guest_module_info_t* out_info)
     return ctx.found;
 }
 
+/**
+ * @description 从缓存中获取模块基址。
+ * @param {const char*} module_name 模块名称。
+ * @return {uint64_t} 模块基址，未命中返回 0。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto base = get_cached_module_base("ntoskrnl.exe");
+ */
 uint64_t get_cached_module_base(const char* module_name)
 {
+    // 业务说明：按模块名称返回缓存中的基址。
+    // 输入：module_name；输出：基址；规则：未命中返回 0；异常：不抛出。
     if (!module_name) return 0;
 
     if (str_compare_insensitive(module_name, "ntoskrnl.exe") == 0 ||
@@ -288,8 +420,18 @@ uint64_t get_cached_module_base(const char* module_name)
 // Initialization
 // =============================================================================
 
+/**
+ * @description 初始化来宾模块发现流程。
+ * @param {uint64_t} ntoskrnl_base ntoskrnl 基址。
+ * @return {bool} 是否初始化成功。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto ok = init_guest_discovery(nt_base);
+ */
 bool init_guest_discovery(uint64_t ntoskrnl_base)
 {
+    // 业务说明：设置 ntoskrnl 基址并标记缓存初始化。
+    // 输入：ntoskrnl_base；输出：初始化状态；规则：需要显式基址；异常：不抛出。
     if (g_module_cache.initialized) {
         return true;
     }

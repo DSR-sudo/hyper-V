@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "ia32-doc/ia32.hpp"
 
 #ifdef _INTELMACHINE
