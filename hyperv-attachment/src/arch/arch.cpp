@@ -1,8 +1,7 @@
 ﻿#include "arch.h"
 #include "../crt/crt.h"
-#include "../memory_manager/memory_manager.h"
 #include "../memory_manager/heap_manager.h"
-#include <intrin.h>
+#include "../memory_manager/memory_manager.h"
 #include <ia32-doc/ia32.hpp>
 #include "../slat/cr3/cr3.h"
 

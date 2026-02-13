@@ -74,12 +74,12 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)\build\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)\build\$(Platform)\$(Configuration)\obj\$(TargetName)\</IntDir>
-    <IncludePath>$(SolutionDir)shared;$(ProjectDir)ext;$(IncludePath)</IncludePath>
+    <IncludePath>$(ProjectDir)..\shared;$(ProjectDir)ext;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)\build\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)\build\$(Platform)\$(Configuration)\obj\$(TargetName)\</IntDir>
-    <IncludePath>$(SolutionDir)shared;$(ProjectDir)ext;$(IncludePath)</IncludePath>
+    <IncludePath>$(ProjectDir)..\shared;$(ProjectDir)ext;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -170,9 +170,16 @@
   <ItemGroup>
     <ClCompile Include="src\apic\apic.cpp" />
     <ClCompile Include="src\arch\arch.cpp" />
+    <ClCompile Include="src\business\business.cpp" />
+    <ClCompile Include="src\business\driver_instrumentation\driver_instrumentation.cpp" />
+    <ClCompile Include="src\business\kernel_scan\kernel_scan.cpp" />
+    <ClCompile Include="src\core\core.cpp" />
     <ClCompile Include="src\crt\crt.cpp" />
     <ClCompile Include="src\hypercall\hypercall.cpp" />
     <ClCompile Include="src\interrupts\interrupts.cpp" />
+    <ClCompile Include="src\loader\cookie.cpp" />
+    <ClCompile Include="src\loader\imports.cpp" />
+    <ClCompile Include="src\loader\reloc.cpp" />
     <ClCompile Include="src\logs\logs.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\memory_manager\heap_manager.cpp" />
@@ -198,6 +205,10 @@
     <ClInclude Include="src\arch_config.h" />
     <ClInclude Include="ext\ia32-doc\ia32.hpp" />
     <ClInclude Include="src\arch\arch.h" />
+    <ClInclude Include="src\business\business.h" />
+    <ClInclude Include="src\business\driver_instrumentation\driver_instrumentation.h" />
+    <ClInclude Include="src\business\kernel_scan\kernel_scan.h" />
+    <ClInclude Include="src\core\core.h" />
     <ClInclude Include="src\crt\crt.h" />
     <ClInclude Include="src\hypercall\hypercall.h" />
     <ClInclude Include="src\interrupts\interrupts.h" />
@@ -216,14 +227,10 @@
     <ClInclude Include="src\slat\cr3\pte.h" />
     <ClInclude Include="src\slat\violation\violation.h" />
     <ClInclude Include="src\structures\virtual_address.h" />
-    <ClInclude Include="src\loader\cookie.h" />
-    <ClInclude Include="src\loader\deployer.h" />
-    <ClInclude Include="src\loader\guest.h" />
-    <ClInclude Include="src\loader\imports.h" />
-    <ClInclude Include="src\loader\loader.h" />
-    <ClInclude Include="src\loader\pe.h" />
-    <ClInclude Include="src\loader\reloc.h" />
+    <ClInclude Include="..\shared\hypercall\hypercall_def.h" />
     <ClInclude Include="..\shared\payload\payload_bin.h" />
+    <ClInclude Include="..\shared\structures\memory_operation.h" />
+    <ClInclude Include="..\shared\structures\trap_frame.h" />
   </ItemGroup>
   <ItemGroup>
     <MASM Include="src\interrupts\interrupt_entry.asm" />

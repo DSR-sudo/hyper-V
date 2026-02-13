@@ -1,5 +1,4 @@
 param(
-    [string]$DkomPath = "d:\RWbase\RWbase\DKOM.sys",
     [string]$RwbasePath = "d:\RWbase\RWbase\RWbase.sys",
     [string]$OutputPath = "d:\Hyper\shared\payload\payload_bin.h"
 )
@@ -37,16 +36,6 @@ const size_t ${VarName}_image_size = $($bytes.Length);
 Write-Host "=== VMM Shadow Mapper - Payload Header Generator ===" -ForegroundColor Cyan
 Write-Host ""
 
-# Generate DKOM block
-Write-Host "Processing DKOM.sys..." -ForegroundColor Yellow
-$dkomBlock = Convert-BinaryToCArray -FilePath $DkomPath -VarName "dkom"
-if ($null -eq $dkomBlock) {
-    Write-Error "Failed to process DKOM.sys"
-    exit 1
-}
-Write-Host "  DKOM processed successfully" -ForegroundColor Green
-
-# Generate RWbase block  
 Write-Host "Processing RWbase.sys..." -ForegroundColor Yellow
 $rwbaseBlock = Convert-BinaryToCArray -FilePath $RwbasePath -VarName "rwbase"
 if ($null -eq $rwbaseBlock) {
@@ -68,7 +57,6 @@ $headerContent = @"
 #include <cstdint>
 
 namespace payload {
-$dkomBlock
 $rwbaseBlock
 
 } // namespace payload
@@ -127,7 +115,6 @@ function Get-PEInfo {
     Write-Host "    File Size:        $($bytes.Length) bytes"
 }
 
-Get-PEInfo -FilePath $DkomPath -Name "DKOM"
 Get-PEInfo -FilePath $RwbasePath -Name "RWbase"
 
 Write-Host ""

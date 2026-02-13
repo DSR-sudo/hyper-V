@@ -14,7 +14,9 @@ enum class hypercall_type_t : std::uint64_t
     log_current_state,
     flush_logs,
     get_heap_free_page_count,
-    get_logs
+    get_logs,
+    prepare_manual_hijack,
+    trigger_manual_hijack
 };
 
 #pragma warning(push)

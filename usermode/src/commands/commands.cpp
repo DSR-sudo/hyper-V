@@ -7,6 +7,8 @@
 
 #include <print>
 #include <array>
+#include <Windows.h>
+#include <winternl.h>
 
 #define d_invoke_command_processor(command) process_##command(##command)
 #define d_initial_process_command(command) if (*##command) d_invoke_command_processor(command)
@@ -547,6 +549,106 @@ void process_dkm(CLI::App* dkm)
 	}
 }
 
+std::wstring to_wstring(const std::string& value)
+{
+	return std::wstring(value.begin(), value.end());
+}
+
+std::wstring normalize_nt_path(const std::string& path)
+{
+	if (path.empty())
+	{
+		return L"\\??\\C:\\Windows\\System32\\ntdll.dll";
+	}
+	if (path.rfind("\\??\\", 0) == 0)
+	{
+		return to_wstring(path);
+	}
+	return L"\\??\\" + to_wstring(path);
+}
+
+std::uint8_t trigger_nt_open(const std::wstring& path)
+{
+	UNICODE_STRING unicode_path = {};
+	RtlInitUnicodeString(&unicode_path, path.c_str());
+
+	OBJECT_ATTRIBUTES object_attributes = {};
+	InitializeObjectAttributes(&object_attributes, &unicode_path, OBJ_CASE_INSENSITIVE, nullptr, nullptr);
+
+	IO_STATUS_BLOCK io_status = {};
+	HANDLE file_handle = nullptr;
+	NTSTATUS status = NtOpenFile(&file_handle, FILE_READ_ATTRIBUTES, &object_attributes, &io_status,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_NON_DIRECTORY_FILE);
+
+	if (status >= 0)
+	{
+		CloseHandle(file_handle);
+		return 1;
+	}
+
+	return 0;
+}
+
+CLI::App* init_hprep(CLI::App& app)
+{
+	CLI::App* hprep = app.add_subcommand("hprep", "prepare manual hijack stage")->ignore_case();
+
+	return hprep;
+}
+
+void process_hprep(CLI::App* hprep)
+{
+	(void)hprep;
+
+	const std::uint64_t status = hypercall::prepare_manual_hijack();
+
+	if (status == 1)
+	{
+		std::println("prepare requested");
+	}
+	else
+	{
+		std::println("prepare request failed");
+	}
+}
+
+CLI::App* init_htrig(CLI::App& app)
+{
+	CLI::App* htrig = app.add_subcommand("htrig", "trigger manual hijack stage")->ignore_case();
+
+	add_command_option(htrig, "path");
+
+	return htrig;
+}
+
+void process_htrig(CLI::App* htrig)
+{
+	const std::string path = get_command_option<std::string>(htrig, "path");
+
+	const DWORD_PTR previous_affinity = SetThreadAffinityMask(GetCurrentThread(), 1);
+	(void)previous_affinity;
+
+	const std::uint64_t status = hypercall::trigger_manual_hijack();
+
+	if (status != 1)
+	{
+		std::println("trigger request failed");
+		return;
+	}
+
+	const std::wstring nt_path = normalize_nt_path(path);
+	const std::uint8_t opened = trigger_nt_open(nt_path);
+
+	if (opened == 1)
+	{
+		std::println("triggered kernel open");
+	}
+	else
+	{
+		std::println("kernel open failed");
+	}
+}
+
 CLI::App* init_gva(CLI::App& app, CLI::Transformer& aliases_transformer)
 {
 	CLI::App* gva = app.add_subcommand("gva", "get the numerical value of an alias")->ignore_case();
@@ -611,6 +713,8 @@ void commands::process(const std::string command)
 	CLI::App* lkm = init_lkm(app);
 	CLI::App* kme = init_kme(app);
 	CLI::App* dkm = init_dkm(app);
+	CLI::App* hprep = init_hprep(app);
+	CLI::App* htrig = init_htrig(app);
 
 	try
 	{
@@ -633,10 +737,11 @@ void commands::process(const std::string command)
 		d_process_command(lkm);
 		d_process_command(kme);
 		d_process_command(dkm);
+		d_process_command(hprep);
+		d_process_command(htrig);
 	}
 	catch (const CLI::ParseError& error)
 	{
 		app.exit(error);
 	}
 }
-

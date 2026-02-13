@@ -119,3 +119,13 @@ std::uint64_t hypercall::get_logs(char* buffer, std::uint64_t size)
 {
 	return make_hypercall(hypercall_type_t::get_logs, 0xDEADBEEF, reinterpret_cast<std::uint64_t>(buffer), size, 0);
 }
+
+std::uint64_t hypercall::prepare_manual_hijack()
+{
+	return make_hypercall(hypercall_type_t::prepare_manual_hijack, 0, 0, 0, 0);
+}
+
+std::uint64_t hypercall::trigger_manual_hijack()
+{
+	return make_hypercall(hypercall_type_t::trigger_manual_hijack, 0, 0, 0, 0);
+}

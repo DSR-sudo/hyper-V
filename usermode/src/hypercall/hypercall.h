@@ -23,4 +23,6 @@ namespace hypercall
 
 	std::uint64_t get_heap_free_page_count();
 	std::uint64_t get_logs(char* buffer, std::uint64_t size);
+	std::uint64_t prepare_manual_hijack();
+	std::uint64_t trigger_manual_hijack();
 }

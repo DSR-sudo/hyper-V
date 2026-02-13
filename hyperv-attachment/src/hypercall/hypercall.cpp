@@ -6,12 +6,13 @@
 #include "../slat/cr3/cr3.h"
 #include "../slat/hook/hook.h"
 
+#include "../business/driver_instrumentation/driver_instrumentation.h"
 #include "../arch/arch.h"
 #include "../logs/logs.h"
 #include "../crt/crt.h"
 
 #include <ia32-doc/ia32.hpp>
-#include <hypercall/hypercall_def.h>
+#include "../../shared/hypercall/hypercall_def.h"
 
 /**
  * @description 在来宾物理内存与来宾缓冲之间执行读写。
@@ -415,6 +416,18 @@ void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* con
         // 业务说明：获取堆空闲页数量。
         // 输入：无；输出：空闲页数量；规则：读取堆管理器；异常：不抛出。
         trap_frame->rax = heap_manager::get_free_page_count();
+
+        break;
+    }
+    case hypercall_type_t::prepare_manual_hijack:
+    {
+        trap_frame->rax = business::driver_instrumentation::request_prepare();
+
+        break;
+    }
+    case hypercall_type_t::trigger_manual_hijack:
+    {
+        trap_frame->rax = business::driver_instrumentation::request_trigger();
 
         break;
     }
