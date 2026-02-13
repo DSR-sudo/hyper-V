@@ -1,4 +1,4 @@
-#include "memory_manager/memory_manager.h"
+﻿#include "memory_manager/memory_manager.h"
 #include "memory_manager/heap_manager.h"
 #include "logs/logs.h"
 #include <ia32-doc/ia32.hpp>

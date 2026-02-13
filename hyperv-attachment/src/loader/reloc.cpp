@@ -34,7 +34,7 @@ bool apply_relocations(void* payload_image, const uint64_t target_va)
     // 输入：nt_headers；输出：reloc_dir；规则：不存在则直接成功；异常：不抛出。
     const auto& reloc_dir = nt_headers->optional_header.data_directory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
     if (!reloc_dir.virtual_address || !reloc_dir.size) {
-        // No relocations needed - this is valid for PIC code like DKOM
+        // No relocations needed - this is valid for PIC code
         logs::print("[Loader] apply_relocations: No relocation table (PIC code?)\n");
         return true;
     }
