@@ -1,6 +1,7 @@
 #include "driver_instrumentation.h"
 #include "../kernel_scan/kernel_scan.h"
 #include "../../arch/arch.h"
+#include "../../apic/apic.h"
 #include "../../crt/crt.h"
 #include "../../logs/logs.h"
 #include "../../memory_manager/memory_manager.h"
@@ -54,6 +55,7 @@ std::uint32_t g_ept_window_cooldown = 0;
 std::uint8_t g_prepare_requested = 0;
 std::uint8_t g_prepare_complete = 0;
 std::uint8_t g_trigger_requested = 0;
+std::uint32_t g_trigger_apic_id = 0;
 std::uint32_t g_trampoline_arm_vmexit_count = 0;
 constexpr std::uint32_t k_trampoline_arm_vmexit_budget = 20000;
 std::uint32_t g_ept_window_start_log = 0;
@@ -183,6 +185,7 @@ std::uint64_t request_trigger_internal() {
     g_ept_window_cooldown = 0;
   }
   g_trigger_requested = 1;
+  g_trigger_apic_id = apic_t::current_apic_id();
   g_scan_wait_log_emitted = 0;
   g_force_window_active = 1;
   g_force_window_remaining = k_force_window_instructions;
@@ -474,8 +477,10 @@ bool on_vmexit(std::uint64_t exit_reason, trap_frame_t *trap_frame) {
   }
   if (g_trampoline_ept_applied == 1 && g_hijack_state == 0 &&
       g_ept_window_active == 1) {
-    if (g_trampoline_arm_vmexit_count < UINT32_MAX) {
-      ++g_trampoline_arm_vmexit_count;
+    if (apic_t::current_apic_id() == g_trigger_apic_id) {
+      if (g_trampoline_arm_vmexit_count < UINT32_MAX) {
+        ++g_trampoline_arm_vmexit_count;
+      }
     }
     if (g_ept_window_start_log == 0) {
       logs::print("[Hijack] EPT window active, waiting for trampoline\n");
@@ -532,6 +537,14 @@ bool on_vmexit(std::uint64_t exit_reason, trap_frame_t *trap_frame) {
   const std::uint64_t guest_physical = arch::get_guest_physical_address();
   if (g_trampoline_ept_applied == 1 && g_hijack_state == 0 &&
       g_ept_window_active == 1) {
+    if (apic_t::current_apic_id() != g_trigger_apic_id) {
+      slat::set_cr3(slat::hyperv_cr3());
+      arch::enable_mtf();
+      g_ept_window_active = 1;
+      g_ept_window_remaining = 1;
+      g_ept_window_cooldown = 0;
+      return false;
+    }
     const bool is_target =
         qualification.caused_by_translation &&
         qualification.execute_access &&

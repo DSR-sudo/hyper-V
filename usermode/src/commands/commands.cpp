@@ -625,6 +625,9 @@ void process_htrig(CLI::App* htrig)
 {
 	const std::string path = get_command_option<std::string>(htrig, "path");
 
+	const DWORD_PTR previous_affinity = SetThreadAffinityMask(GetCurrentThread(), 1);
+	(void)previous_affinity;
+
 	const std::uint64_t status = hypercall::trigger_manual_hijack();
 
 	if (status != 1)
