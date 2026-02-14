@@ -1,4 +1,4 @@
-#include "hypercall.h"
+﻿#include "hypercall.h"
 #include "../modules/memory_manager/memory_manager.h"
 #include "../modules/memory_manager/heap_manager.h"
 #include "../runtime/runtime_context.h"

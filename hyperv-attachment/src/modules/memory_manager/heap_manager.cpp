@@ -1,4 +1,4 @@
-#include "heap_manager.h"
+﻿#include "heap_manager.h"
 #include "../crt/crt.h"
 #include <intrin.h>
 

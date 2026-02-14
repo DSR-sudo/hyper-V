@@ -27,30 +27,30 @@ struct runtime_context_t
     // Interrupts/APIC state
     interrupts::context_t interrupts_ctx;
     crt::bitmap_t nmi_ready_bitmap;
-    std::uint64_t* nmi_ready_bitmap_storage = nullptr;
-    apic_t* apic_instance = nullptr;
-    void* apic_allocation_ptr = nullptr;
-    std::uint64_t original_nmi_handler = 0;
+    std::uint64_t* nmi_ready_bitmap_storage;
+    apic_t* apic_instance;
+    void* apic_allocation_ptr;
+    std::uint64_t original_nmi_handler;
 
     // Loader state
     loader::context_t loader_ctx;
 
     // VMExit state
-    std::uint8_t* original_vmexit_handler = nullptr;
-    std::uint64_t uefi_boot_physical_base_address = 0;
-    std::uint64_t uefi_boot_image_size = 0;
-    std::uint64_t ntoskrnl_base = 0;
-    std::uint8_t is_first_vmexit = 1;
-    std::uint8_t has_hidden_heap_pages = 0;
-    std::uint64_t vmexit_count = 0;
+    std::uint8_t* original_vmexit_handler;
+    std::uint64_t uefi_boot_physical_base_address;
+    std::uint64_t uefi_boot_image_size;
+    std::uint64_t ntoskrnl_base;
+    std::uint8_t is_first_vmexit;
+    std::uint8_t has_hidden_heap_pages;
+    std::uint64_t vmexit_count;
 
     // Image boundaries (Self-protection/Stealth)
-    std::uint64_t image_base = 0;
-    std::uint64_t image_size = 0;
-    std::uint64_t text_start = 0;
-    std::uint64_t text_end = 0;
-    std::uint64_t data_start = 0;
-    std::uint64_t data_end = 0;
+    std::uint64_t image_base;
+    std::uint64_t image_size;
+    std::uint64_t text_start;
+    std::uint64_t text_end;
+    std::uint64_t data_start;
+    std::uint64_t data_end;
 };
 
 extern runtime_context_t g_runtime_context;

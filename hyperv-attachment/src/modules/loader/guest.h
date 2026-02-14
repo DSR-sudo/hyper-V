@@ -5,6 +5,7 @@
 // =============================================================================
 
 #include <cstdint>
+#include <atomic>
 #include <ia32-doc/ia32.hpp>
 #include "../logs/logs.h"
 
@@ -31,6 +32,7 @@ struct context_t {
     module_cache_t module_cache;
     logs::context_t* log_ctx;
     heap_manager::context_t* heap_ctx;
+    std::atomic<uint32_t> deployment_state;
 };
 
 // =============================================================================

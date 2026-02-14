@@ -1,4 +1,4 @@
-﻿﻿#include "payload_validation.h"
+﻿#include "payload_validation.h"
 
 /**
  * @description 校验载荷内容是否可用。

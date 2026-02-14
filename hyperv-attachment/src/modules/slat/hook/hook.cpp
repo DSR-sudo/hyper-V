@@ -1,4 +1,4 @@
-#include "hook.h"
+﻿#include "hook.h"
 #include "hook_entry.h"
 
 #include "../cr3/cr3.h"

@@ -1,4 +1,4 @@
-#include "memory_manager.h"
+﻿#include "memory_manager.h"
 
 #include "../crt/crt.h"
 #include "../slat/slat.h"

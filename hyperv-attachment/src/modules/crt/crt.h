@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <cstdint>
 
 namespace crt
@@ -86,7 +86,7 @@ namespace crt
 		void release();
 
 	protected:
-		volatile std::int64_t value_ = 0;
+		volatile std::int64_t value_;
 	};
 
 	class bitmap_t
@@ -124,8 +124,8 @@ namespace crt
 		constexpr static size_type bit_count_in_row = sizeof(value_type) * 8;
 		constexpr static value_type value_max = ~static_cast<value_type>(0);
 
-		pointer value_ = nullptr;
-		size_type count_ = 0;
+		pointer value_;
+		size_type count_;
 
 		[[nodiscard]] pointer row(value_type index) const;
 	};

@@ -92,6 +92,9 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
 {
     (void)reserved_one; // Intel Only
 
+    // 初始化全局状态
+    g_runtime_context.is_first_vmexit = 1;
+
     // Task 1.4: Receive ntoskrnl_base captured by uefi-boot from LoaderBlock
     if (ntoskrnl_base_from_uefi != 0)
     {
@@ -138,6 +141,7 @@ void entry_point(std::uint8_t** const vmexit_handler_detour_out, std::uint8_t* c
 
     g_runtime_context.loader_ctx.log_ctx = &g_runtime_context.log_ctx;
     g_runtime_context.loader_ctx.heap_ctx = &g_runtime_context.heap_ctx;
+    g_runtime_context.loader_ctx.deployment_state.store(0);
 
     // [ARCHITECT Phase 2] PE Parsing & Boundary Locking
     // 业务说明：解析自身 PE 头与节区边界，记录镜像与代码/数据范围。

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // =============================================================================
 // VMM Shadow Mapper - Relocation Engine
 // Ported from kdmapper::RelocateImageByDelta

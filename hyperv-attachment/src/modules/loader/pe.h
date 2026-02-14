@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // =============================================================================
 // VMM Shadow Mapper - PE Structure Definitions
 // Ported from kdmapper/portable_executable.hpp without STL dependencies

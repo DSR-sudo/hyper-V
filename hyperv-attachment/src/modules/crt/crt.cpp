@@ -134,7 +134,12 @@ bool crt::mutex_t::try_lock()
 {
 	// 业务说明：单次原子交换检测锁状态。
 	// 输入：无；输出：是否获取成功；规则：不阻塞；异常：不抛出。
-	return _InterlockedCompareExchange64(&value_, 1, 0) == 0;
+	if (_InterlockedCompareExchange64(&value_, 1, 0) == 0)
+	{
+		return true;
+	}
+
+	return false;
 }
 
 /**
@@ -189,16 +194,19 @@ void crt::bitmap_t::set(const value_type index) const
 {
     // 业务说明：定位目标位所在行并置位。
     // 输入：index；输出：位图更新；规则：行为空则忽略；异常：不抛出。
-    const pointer target_row_ptr = row(index);
+    if (value_ == nullptr)
+    {
+        return;
+    }
 
-    if (target_row_ptr == nullptr)
+    const size_type row_id = static_cast<size_type>(index / bit_count_in_row);
+    if (count_ <= row_id)
     {
         return;
     }
 
     const std::uint64_t bit = index % bit_count_in_row;
-
-    *target_row_ptr |= 1ull << bit;
+    value_[row_id] |= 1ull << bit;
 }
 
 /**
@@ -213,16 +221,19 @@ void crt::bitmap_t::clear(const value_type index) const
 {
     // 业务说明：定位目标位所在行并清零。
     // 输入：index；输出：位图更新；规则：行为空则忽略；异常：不抛出。
-    const pointer target_row_ptr = row(index);
+    if (value_ == nullptr)
+    {
+        return;
+    }
 
-    if (target_row_ptr == nullptr)
+    const size_type row_id = static_cast<size_type>(index / bit_count_in_row);
+    if (count_ <= row_id)
     {
         return;
     }
 
     const size_type bit = index % bit_count_in_row;
-
-    *target_row_ptr &= ~(1ull << bit);
+    value_[row_id] &= ~(1ull << bit);
 }
 
 /**
@@ -237,14 +248,18 @@ crt::bitmap_t::bit_type crt::bitmap_t::is_set(const value_type index) const
 {
     // 业务说明：读取指定索引位的状态。
     // 输入：index；输出：位状态；规则：行为空返回 0；异常：不抛出。
-    const const_pointer target_row_ptr = row(index);
-
-    if (target_row_ptr == nullptr)
+    if (value_ == nullptr)
     {
         return 0;
     }
 
-    const value_type row_value = *target_row_ptr;
+    const size_type row_id = static_cast<size_type>(index / bit_count_in_row);
+    if (count_ <= row_id)
+    {
+        return 0;
+    }
+
+    const value_type row_value = value_[row_id];
     const size_type bit = index % bit_count_in_row;
 
     return (row_value >> bit) & 1;
@@ -264,7 +279,7 @@ void crt::bitmap_t::set_value(const pointer value)
     // 输入：value；输出：value_ 更新；规则：直接赋值；异常：不抛出。
     value_ = value;
 }
-	
+
 /**
  * @description 设置位图行数。
  * @param {const size_type} value_count 行数。

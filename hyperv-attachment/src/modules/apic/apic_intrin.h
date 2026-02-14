@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "apic_def.h"
 
 #if defined(_MSC_VER) && !defined(__clang__)

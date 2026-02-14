@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // =============================================================================
 // VMM Shadow Mapper - Security Cookie Fixer
 // Ported from kdmapper::FixSecurityCookie

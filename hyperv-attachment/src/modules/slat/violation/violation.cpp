@@ -1,4 +1,4 @@
-#include "violation.h"
+﻿#include "violation.h"
 #include "../cr3/cr3.h"
 #include "../hook/hook_entry.h"
 #include "../../arch/arch.h"

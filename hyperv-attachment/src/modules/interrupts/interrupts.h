@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../apic/apic.h"
 #include "../crt/crt.h"
 

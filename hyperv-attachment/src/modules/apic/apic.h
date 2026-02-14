@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "apic_def.h"
 
 // if you want apic_t::create_instance to use runtime memory allocation for the instance(s) it creates

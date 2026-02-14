@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 // VMM Shadow Mapper - Security Cookie Fixer
 // Ported from kdmapper::FixSecurityCookie by @Jerem584
 // =============================================================================
@@ -15,14 +15,13 @@ namespace loader {
  * @description 修复 Payload 的安全 Cookie 值。
  * @param {context_t*} ctx 加载器上下文。
  * @param {void*} payload_image Payload 镜像基址。
- * @param {const uint64_t} kernel_image_base 内核目标基址。
+ * @param {uint64_t} kernel_image_base 内核目标基址。
  * @return {bool} 是否修复成功。
  * @throws {无} 不抛出异常。
  * @example
  * const auto ok = loader::fix_security_cookie(ctx, image_base, kernel_base);
  */
-// 业务说明：根据加载配置定位安全 Cookie 并生成新值写回。
-bool fix_security_cookie(context_t* ctx, void* payload_image, const uint64_t kernel_image_base)
+bool fix_security_cookie(context_t* ctx, void* payload_image, uint64_t kernel_image_base)
 {
     if (!payload_image || !ctx) {
         logs::print(ctx ? ctx->log_ctx : nullptr, "[Loader] fix_security_cookie: Invalid arguments\n");

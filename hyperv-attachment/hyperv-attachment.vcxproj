@@ -189,6 +189,9 @@
     <ClCompile Include="src\modules\slat\violation\violation.cpp" />
     <ClCompile Include="src\modules\loader\guest.cpp" />
     <ClCompile Include="src\modules\loader\imports.cpp" />
+    <ClCompile Include="src\modules\loader\reloc.cpp" />
+    <ClCompile Include="src\modules\loader\cookie.cpp" />
+    <ClCompile Include="src\manager\loader\deployer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\modules\apic\apic.h" />
@@ -216,7 +219,7 @@
     <ClInclude Include="src\modules\slat\violation\violation.h" />
     <ClInclude Include="src\structures\virtual_address.h" />
     <ClInclude Include="src\modules\loader\cookie.h" />
-    <ClInclude Include="src\modules\loader\deployer.h" />
+    <ClInclude Include="src\manager\loader\deployer.h" />
     <ClInclude Include="src\modules\loader\guest.h" />
     <ClInclude Include="src\modules\loader\imports.h" />
     <ClInclude Include="src\modules\loader\loader.h" />

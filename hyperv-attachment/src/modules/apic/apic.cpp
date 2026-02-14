@@ -1,4 +1,4 @@
-#include "apic.h"
+﻿#include "apic.h"
 #include "apic_intrin.h"
 
 #include "../memory_manager/memory_manager.h"

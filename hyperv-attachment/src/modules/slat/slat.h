@@ -22,10 +22,10 @@ namespace slat
 		void* hook_slat_pml4;
 		cr3 hyperv_slat_cr3;
 
-		crt::mutex_t hook_mutex = { };
-		slat::hook::entry_t* available_hook_list_head = nullptr;
-		slat::hook::entry_t* used_hook_list_head = nullptr;
-		std::uint8_t is_first_slat_hook = 1;
+		crt::mutex_t hook_mutex;
+		slat::hook::entry_t* available_hook_list_head;
+		slat::hook::entry_t* used_hook_list_head;
+		std::uint8_t is_first_slat_hook;
 
 		// 堆隐藏状态
 		std::atomic<std::uint64_t> current_shared_address;

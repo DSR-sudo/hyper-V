@@ -7,6 +7,10 @@ Hyper-V Project Detailed Architecture Map
 │       └── hyper.md                    # 项目编码规范与模块化设计准则 (以 main 为核心的架构)
 ├── hyperv-attachment/                  # 核心 hypervisor 逻辑 (遵循模块化解耦原则)
 │   ├── src/
+│   │   ├── manager/                    # 业务管理层 (负责逻辑编排与状态协调)
+│   │   │   └── loader/                 # 业务逻辑: Payload 部署与加载管理
+│   │   │       ├── deployer.cpp        # Payload 部署协调器实现 (业务层)
+│   │   │       └── deployer.h          # 部署接口: loader::deploy_rwbase_payload
 │   │   ├── modules/                    # 工具模块 (必须无状态设计)
 │   │   │   ├── apic/                   # APIC (中断控制器) 处理
 │   │   │   │   ├── apic.cpp            # APIC 基类与 xAPIC/x2APIC 实现
@@ -27,8 +31,6 @@ Hyper-V Project Detailed Architecture Map
 │   │   │   ├── loader/                 # 工具模块: 影子映射器与 Payload 加载工具
 │   │   │   │   ├── cookie.cpp          # Security Cookie 修复实现
 │   │   │   │   ├── cookie.h            # Cookie 修复接口
-│   │   │   │   ├── deployer.cpp        # Payload 部署协调器实现
-│   │   │   │   ├── deployer.h          # 部署接口: loader::deploy_payload
 │   │   │   │   ├── guest.cpp           # Guest 内核模块发现逻辑
 │   │   │   │   ├── guest.h             # 接口: loader::init_guest_discovery
 │   │   │   │   ├── imports.cpp         # 内核导出函数解析实现
