@@ -57,9 +57,6 @@
     <ClCompile Include="src\slat\cr3\pte.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\slat\hook\amd_page_split.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\slat\hook\hook.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -132,9 +129,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\slat\cr3\pte.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\slat\hook\amd_page_split.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\slat\hook\hook.h">

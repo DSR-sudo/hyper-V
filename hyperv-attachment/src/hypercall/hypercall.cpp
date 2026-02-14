@@ -1,14 +1,15 @@
 #include "hypercall.h"
-#include "../memory_manager/memory_manager.h"
-#include "../memory_manager/heap_manager.h"
+#include "../modules/memory_manager/memory_manager.h"
+#include "../modules/memory_manager/heap_manager.h"
+#include "../runtime/runtime_context.h"
 
-#include "../slat/slat.h"
-#include "../slat/cr3/cr3.h"
-#include "../slat/hook/hook.h"
+#include "../modules/slat/slat.h"
+#include "../modules/slat/cr3/cr3.h"
+#include "../modules/slat/hook/hook.h"
 
-#include "../arch/arch.h"
-#include "../logs/logs.h"
-#include "../crt/crt.h"
+#include "../modules/arch/arch.h"
+#include "../modules/logs/logs.h"
+#include "../modules/crt/crt.h"
 
 #include <ia32-doc/ia32.hpp>
 #include <hypercall/hypercall_def.h>
@@ -27,7 +28,7 @@ std::uint64_t operate_on_guest_physical_memory(const trap_frame_t* const trap_fr
     // 业务说明：按页转换来宾地址并执行物理内存读写。
     // 输入：trap_frame/operation；输出：拷贝字节数；规则：转换失败停止；异常：不抛出。
     const cr3 guest_cr3 = arch::get_guest_cr3();
-    const cr3 slat_cr3 = slat::hyperv_cr3();
+    const cr3 slat_cr3 = slat::hyperv_cr3(&g_runtime_context.slat_ctx);
 
     const std::uint64_t guest_buffer_virtual_address = trap_frame->r8;
     const std::uint64_t guest_physical_address = trap_frame->rdx;
@@ -91,7 +92,7 @@ std::uint64_t operate_on_guest_virtual_memory(const trap_frame_t* const trap_fra
     const cr3 guest_source_cr3 = { .address_of_page_directory = address_of_page_directory };
 
     const cr3 guest_destination_cr3 = arch::get_guest_cr3();
-    const cr3 slat_cr3 = slat::hyperv_cr3();
+    const cr3 slat_cr3 = slat::hyperv_cr3(&g_runtime_context.slat_ctx);
 
     const std::uint64_t guest_destination_virtual_address = trap_frame->rdx;
     const  std::uint64_t guest_source_virtual_address = trap_frame->r8;
@@ -170,7 +171,7 @@ std::uint8_t copy_stack_data_from_log_exit(std::uint64_t* const stack_data, cons
         return 0;
     }
 
-    const cr3 slat_cr3 = slat::hyperv_cr3();
+    const cr3 slat_cr3 = slat::hyperv_cr3(&g_runtime_context.slat_ctx);
 
     std::uint64_t bytes_read = 0;
     std::uint64_t bytes_remaining = stack_data_count * sizeof(std::uint64_t);
@@ -252,7 +253,7 @@ void log_current_state(trap_frame_log_t trap_frame)
     trap_frame.cr3 = guest_cr3.flags;
     trap_frame.rip = arch::get_guest_rip();
 
-    logs::add_log(trap_frame);
+    logs::add_log(&g_runtime_context.log_ctx, trap_frame);
 }
 
 /**
@@ -267,15 +268,15 @@ std::uint64_t flush_logs(const trap_frame_t* const trap_frame)
 {
     // 业务说明：按请求数量将日志从宿主缓存写入来宾内存。
     // 输入：trap_frame；输出：写入条数或错误；规则：写入失败返回 -1；异常：不抛出。
-    std::uint64_t stored_logs_count = logs::stored_log_index;
+    std::uint64_t stored_logs_count = g_runtime_context.log_ctx.stored_log_index;
 
     const cr3 guest_cr3 = arch::get_guest_cr3();
-    const cr3 slat_cr3 = slat::hyperv_cr3();
+    const cr3 slat_cr3 = slat::hyperv_cr3(&g_runtime_context.slat_ctx);
 
     const std::uint64_t guest_virtual_address = trap_frame->rdx;
     const std::uint16_t count = static_cast<std::uint16_t>(trap_frame->r8);
 
-    if (logs::flush(slat_cr3, guest_virtual_address, guest_cr3, count) == 0)
+    if (logs::flush(&g_runtime_context.log_ctx, slat_cr3, guest_virtual_address, guest_cr3, count) == 0)
     {
         return -1;
     }
@@ -301,12 +302,12 @@ void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* con
         // 业务说明：处理日志文本刷写的特殊 Hypercall。
         // 输入：trap_frame；输出：写入字节数；规则：reserved_data 匹配时执行；异常：不抛出。
         const cr3 guest_cr3 = arch::get_guest_cr3();
-        const cr3 slat_cr3 = slat::hyperv_cr3();
+        const cr3 slat_cr3 = slat::hyperv_cr3(&g_runtime_context.slat_ctx);
 
         const std::uint64_t buffer_guest_virtual_address = trap_frame->rdx;
         const std::uint64_t buffer_size = trap_frame->r8;
 
-        trap_frame->rax = logs::flush_to_guest(slat_cr3, buffer_guest_virtual_address, guest_cr3, buffer_size);
+        trap_frame->rax = logs::flush_to_guest(&g_runtime_context.log_ctx, slat_cr3, buffer_guest_virtual_address, guest_cr3, buffer_size);
 
         return;
     }
@@ -343,7 +344,7 @@ void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* con
         const virtual_address_t guest_virtual_address = { .address = trap_frame->rdx };
 
         const cr3 target_guest_cr3 = { .flags = trap_frame->r8 };
-        const cr3 slat_cr3 = slat::hyperv_cr3();
+        const cr3 slat_cr3 = slat::hyperv_cr3(&g_runtime_context.slat_ctx);
 
         trap_frame->rax = memory_manager::translate_guest_virtual_address(target_guest_cr3, slat_cr3, guest_virtual_address);
 
@@ -366,7 +367,7 @@ void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* con
         const virtual_address_t target_guest_physical_address = { .address = trap_frame->rdx };
         const virtual_address_t shadow_page_guest_physical_address = { .address = trap_frame->r8 };
 
-        trap_frame->rax = slat::hook::add(target_guest_physical_address, shadow_page_guest_physical_address);
+        trap_frame->rax = slat::hook::add(&g_runtime_context.slat_ctx, target_guest_physical_address, shadow_page_guest_physical_address);
 
         break;
     }
@@ -376,7 +377,7 @@ void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* con
         // 输入：目标地址；输出：是否成功；规则：调用 Hook 模块；异常：不抛出。
         const virtual_address_t target_guest_physical_address = { .address = trap_frame->rdx };
 
-        trap_frame->rax = slat::hook::remove(target_guest_physical_address);
+        trap_frame->rax = slat::hook::remove(&g_runtime_context.slat_ctx, target_guest_physical_address);
 
         break;
     }
@@ -385,8 +386,9 @@ void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* con
         // 业务说明：隐藏指定来宾物理页。
         // 输入：目标地址；输出：是否成功；规则：调用 SLAT 隐藏；异常：不抛出。
         const virtual_address_t target_guest_physical_address = { .address = trap_frame->rdx };
+        const cr3 slat_cr3 = slat::hyperv_cr3(&g_runtime_context.slat_ctx);
 
-        trap_frame->rax = slat::hide_physical_page_from_guest(target_guest_physical_address);
+        trap_frame->rax = slat::hide_physical_page_from_guest(&g_runtime_context.slat_ctx, slat_cr3, target_guest_physical_address);
 
         break;
     }
@@ -414,7 +416,7 @@ void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* con
     {
         // 业务说明：获取堆空闲页数量。
         // 输入：无；输出：空闲页数量；规则：读取堆管理器；异常：不抛出。
-        trap_frame->rax = heap_manager::get_free_page_count();
+        trap_frame->rax = heap_manager::get_free_page_count(&g_runtime_context.heap_ctx);
 
         break;
     }

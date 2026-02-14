@@ -74,12 +74,12 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(SolutionDir)\build\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)\build\$(Platform)\$(Configuration)\obj\$(TargetName)\</IntDir>
-    <IncludePath>$(SolutionDir)shared;$(ProjectDir)ext;$(IncludePath)</IncludePath>
+    <IncludePath>$(SolutionDir)shared;$(ProjectDir)src;$(ProjectDir)ext;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)\build\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)\build\$(Platform)\$(Configuration)\obj\$(TargetName)\</IntDir>
-    <IncludePath>$(SolutionDir)shared;$(ProjectDir)ext;$(IncludePath)</IncludePath>
+    <IncludePath>$(SolutionDir)shared;$(ProjectDir)src;$(ProjectDir)ext;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -168,66 +168,65 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="src\apic\apic.cpp" />
-    <ClCompile Include="src\arch\arch.cpp" />
-    <ClCompile Include="src\crt\crt.cpp" />
+    <ClCompile Include="src\modules\apic\apic.cpp" />
+    <ClCompile Include="src\modules\arch\arch.cpp" />
+    <ClCompile Include="src\modules\crt\crt.cpp" />
     <ClCompile Include="src\hypercall\hypercall.cpp" />
-    <ClCompile Include="src\interrupts\interrupts.cpp" />
-    <ClCompile Include="src\logs\logs.cpp" />
+    <ClCompile Include="src\modules\interrupts\interrupts.cpp" />
+    <ClCompile Include="src\modules\logs\logs.cpp" />
     <ClCompile Include="src\main.cpp" />
-    <ClCompile Include="src\memory_manager\heap_manager.cpp" />
-    <ClCompile Include="src\memory_manager\memory_manager.cpp" />
+    <ClCompile Include="src\modules\memory_manager\heap_manager.cpp" />
+    <ClCompile Include="src\modules\memory_manager\memory_manager.cpp" />
     <ClCompile Include="src\runtime\payload_validation.cpp" />
+    <ClCompile Include="src\runtime\runtime_context.cpp" />
     <ClCompile Include="src\runtime\vmexit_dispatch.cpp" />
-    <ClCompile Include="src\slat\hook\amd_page_split.cpp" />
-    <ClCompile Include="src\slat\hook\hook.cpp" />
-    <ClCompile Include="src\slat\hook\hook_entry.cpp" />
-    <ClCompile Include="src\slat\slat.cpp" />
-    <ClCompile Include="src\slat\cr3\cr3.cpp" />
-    <ClCompile Include="src\slat\cr3\deep_copy.cpp" />
-    <ClCompile Include="src\slat\cr3\pte.cpp" />
-    <ClCompile Include="src\slat\violation\violation.cpp" />
-    <ClCompile Include="src\loader\guest.cpp" />
-    <ClCompile Include="src\loader\imports.cpp" />
+    <ClCompile Include="src\modules\slat\hook\hook.cpp" />
+    <ClCompile Include="src\modules\slat\hook\hook_entry.cpp" />
+    <ClCompile Include="src\modules\slat\slat.cpp" />
+    <ClCompile Include="src\modules\slat\cr3\cr3.cpp" />
+    <ClCompile Include="src\modules\slat\cr3\deep_copy.cpp" />
+    <ClCompile Include="src\modules\slat\cr3\pte.cpp" />
+    <ClCompile Include="src\modules\slat\violation\violation.cpp" />
+    <ClCompile Include="src\modules\loader\guest.cpp" />
+    <ClCompile Include="src\modules\loader\imports.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\apic\apic.h" />
-    <ClInclude Include="src\apic\apic_def.h" />
-    <ClInclude Include="src\apic\apic_intrin.h" />
-    <ClInclude Include="src\arch\amd_def.h" />
+    <ClInclude Include="src\modules\apic\apic.h" />
+    <ClInclude Include="src\modules\apic\apic_def.h" />
+    <ClInclude Include="src\modules\apic\apic_intrin.h" />
+    <ClInclude Include="src\modules\arch\amd_def.h" />
     <ClInclude Include="src\arch_config.h" />
     <ClInclude Include="ext\ia32-doc\ia32.hpp" />
-    <ClInclude Include="src\arch\arch.h" />
-    <ClInclude Include="src\crt\crt.h" />
+    <ClInclude Include="src\modules\arch\arch.h" />
+    <ClInclude Include="src\modules\crt\crt.h" />
     <ClInclude Include="src\hypercall\hypercall.h" />
-    <ClInclude Include="src\interrupts\interrupts.h" />
-    <ClInclude Include="src\logs\logs.h" />
-    <ClInclude Include="src\memory_manager\heap_manager.h" />
-    <ClInclude Include="src\memory_manager\memory_manager.h" />
+    <ClInclude Include="src\modules\interrupts\interrupts.h" />
+    <ClInclude Include="src\modules\logs\logs.h" />
+    <ClInclude Include="src\modules\memory_manager\heap_manager.h" />
+    <ClInclude Include="src\modules\memory_manager\memory_manager.h" />
     <ClInclude Include="src\runtime\payload_validation.h" />
     <ClInclude Include="src\runtime\vmexit_dispatch.h" />
-    <ClInclude Include="src\slat\hook\amd_page_split.h" />
-    <ClInclude Include="src\slat\hook\hook_entry.h" />
-    <ClInclude Include="src\slat\hook\hook.h" />
-    <ClInclude Include="src\slat\slat.h" />
-    <ClInclude Include="src\slat\cr3\cr3.h" />
-    <ClInclude Include="src\slat\cr3\deep_copy.h" />
-    <ClInclude Include="src\slat\slat_def.h" />
-    <ClInclude Include="src\slat\cr3\pte.h" />
-    <ClInclude Include="src\slat\violation\violation.h" />
+    <ClInclude Include="src\modules\slat\hook\hook_entry.h" />
+    <ClInclude Include="src\modules\slat\hook\hook.h" />
+    <ClInclude Include="src\modules\slat\slat.h" />
+    <ClInclude Include="src\modules\slat\cr3\cr3.h" />
+    <ClInclude Include="src\modules\slat\cr3\deep_copy.h" />
+    <ClInclude Include="src\modules\slat\slat_def.h" />
+    <ClInclude Include="src\modules\slat\cr3\pte.h" />
+    <ClInclude Include="src\modules\slat\violation\violation.h" />
     <ClInclude Include="src\structures\virtual_address.h" />
-    <ClInclude Include="src\loader\cookie.h" />
-    <ClInclude Include="src\loader\deployer.h" />
-    <ClInclude Include="src\loader\guest.h" />
-    <ClInclude Include="src\loader\imports.h" />
-    <ClInclude Include="src\loader\loader.h" />
-    <ClInclude Include="src\loader\pe.h" />
-    <ClInclude Include="src\loader\reloc.h" />
+    <ClInclude Include="src\modules\loader\cookie.h" />
+    <ClInclude Include="src\modules\loader\deployer.h" />
+    <ClInclude Include="src\modules\loader\guest.h" />
+    <ClInclude Include="src\modules\loader\imports.h" />
+    <ClInclude Include="src\modules\loader\loader.h" />
+    <ClInclude Include="src\modules\loader\pe.h" />
+    <ClInclude Include="src\modules\loader\reloc.h" />
     <ClInclude Include="..\shared\payload\payload_bin.h" />
   </ItemGroup>
   <ItemGroup>
-    <MASM Include="src\interrupts\interrupt_entry.asm" />
-    <MASM Include="src\slat\cr3\intel_invept.asm" />
+    <MASM Include="src\modules\interrupts\interrupt_entry.asm" />
+    <MASM Include="src\modules\slat\cr3\intel_invept.asm" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -1,4 +1,4 @@
-﻿#include "payload_validation.h"
+﻿﻿#include "payload_validation.h"
 
 /**
  * @description 校验载荷内容是否可用。
@@ -11,21 +11,17 @@
  */
 bool validate_payload(const std::uint8_t* payload, const std::uint32_t payload_size)
 {
-    // 业务说明：基础输入校验，避免空指针与空载荷进入后续流程。
-    // 输入：payload 与 payload_size；输出：校验结果；规则：指针为空或长度为零则失败；异常：不抛出。
-    if (!payload || payload_size == 0)
+    // 业务说明：验证 Payload 的基础合法性。
+    // 输入：payload/payload_size；输出：校验结果；规则：目前仅做基础指针与大小校验；异常：不抛出。
+    if (!payload || payload_size < 0x40) // Minimum PE header size
     {
         return false;
     }
 
-    // 业务说明：扫描载荷内容，避免出现非法空字节。
-    // 输入：payload 内容；输出：校验结果；规则：发现空字节即失败；异常：不抛出。
-    for (std::uint32_t i = 0; i < payload_size; ++i)
+    // 检查 MZ 签名
+    if (payload[0] != 'M' || payload[1] != 'Z')
     {
-        if (payload[i] == 0)
-        {
-            return false;
-        }
+        return false;
     }
 
     return true;

@@ -1,24 +1,23 @@
 ﻿#include "vmexit_dispatch.h"
 
-#include "../arch/arch.h"
-#include "../crt/crt.h"
+#include "../modules/arch/arch.h"
+#include "../modules/crt/crt.h"
 #include "../hypercall/hypercall.h"
 #include <hypercall/hypercall_def.h>
-#include "../interrupts/interrupts.h"
-#include "../loader/imports.h"
-#include "../logs/logs.h"
-#include "../memory_manager/memory_manager.h"
-#include "../slat/slat.h"
-#include "../slat/cr3/cr3.h"
-#include "../slat/violation/violation.h"
-#include <structures/trap_frame.h>
+#include "../modules/interrupts/interrupts.h"
+#include "../modules/loader/imports.h"
+#include "../modules/logs/logs.h"
+#include "../modules/memory_manager/memory_manager.h"
+#include "../modules/slat/slat.h"
+#include "../modules/slat/cr3/cr3.h"
+#include "../modules/slat/violation/violation.h"
+#include "../../shared/structures/trap_frame.h"
+
+#include "runtime_context.h"
 
 namespace
 {
-    std::uint8_t* original_vmexit_handler = nullptr;
-    std::uint64_t uefi_boot_physical_base_address = 0;
-    std::uint64_t uefi_boot_image_size = 0;
-    std::uint64_t ntoskrnl_base = 0;
+    // 业务说明：全局状态已移至 g_runtime_context。
 }
 
 /**
@@ -82,20 +81,20 @@ bool dispatch_vmexit(const std::uint64_t exit_reason, const std::uint64_t a1)
         return try_process_hypercall_exit(a1);
     }
 
-    if (arch::is_slat_violation(exit_reason) == 1 && slat::violation::process() == 1)
+    if (arch::is_slat_violation(exit_reason) == 1 && slat::violation::process(&g_runtime_context.slat_ctx) == 1)
     {
         return true;
     }
 
     if (arch::is_non_maskable_interrupt_exit(exit_reason) == 1)
     {
-        interrupts::process_nmi();
+        interrupts::process_nmi(&g_runtime_context.interrupts_ctx);
         return false;
     }
 
     if (arch::is_mtf_exit(exit_reason) == 1)
     {
-        slat::violation::handle_mtf();
+        slat::violation::handle_mtf(&g_runtime_context.slat_ctx);
         return true;
     }
 
@@ -114,8 +113,8 @@ void clean_up_uefi_boot_image()
 {
     // 业务说明：通过 Host 物理映射清理 UEFI 启动镜像内容，降低残留痕迹。
     // 输入：uefi_boot_physical_base_address 与 uefi_boot_image_size；输出：清零后的物理内存；规则：仅在有效映射后写零；异常：不抛出。
-    const auto mapped_uefi_boot_base = static_cast<std::uint8_t*>(memory_manager::map_host_physical(uefi_boot_physical_base_address));
-    crt::set_memory(mapped_uefi_boot_base, 0, uefi_boot_image_size);
+    const auto mapped_uefi_boot_base = static_cast<std::uint8_t*>(memory_manager::map_host_physical(g_runtime_context.uefi_boot_physical_base_address));
+    crt::set_memory(mapped_uefi_boot_base, 0, g_runtime_context.uefi_boot_image_size);
 }
 
 /**
@@ -128,53 +127,56 @@ void clean_up_uefi_boot_image()
  */
 void process_first_vmexit()
 {
-    static std::uint8_t is_first_vmexit = 1;
-
-    if (is_first_vmexit == 1)
+    if (g_runtime_context.is_first_vmexit == 1)
     {
         // 业务说明：首次 VMExit 初始化控制流，完成 SLAT、NMI、清理镜像与导出校验。
         // 输入：全局状态与配置；输出：组件初始化完成；规则：仅首次执行；异常：不抛出。
-        logs::print("[Runtime] First VMExit captured. Taking control...\n");
-        slat::process_first_vmexit();
-        interrupts::set_up();
+        logs::print(&g_runtime_context.log_ctx, "[Runtime] First VMExit captured. Taking control...\n");
+        slat::process_first_vmexit(&g_runtime_context.slat_ctx);
+        g_runtime_context.loader_ctx.guest_cr3 = arch::get_guest_cr3();
+        g_runtime_context.loader_ctx.slat_cr3 = slat::hyperv_cr3(&g_runtime_context.slat_ctx);
+        interrupts::set_up(&g_runtime_context.interrupts_ctx, g_runtime_context.apic_instance, &g_runtime_context.nmi_ready_bitmap, &original_nmi_handler);
+        g_runtime_context.original_nmi_handler = original_nmi_handler;
         clean_up_uefi_boot_image();
 
         // 业务说明：首次 VMExit 验证关键导出符号是否可解析。
         // 输入：ntoskrnl_base；输出：解析结果日志；规则：仅 ntoskrnl_base 非零时执行；异常：不抛出。
-        if (ntoskrnl_base != 0)
+        if (g_runtime_context.ntoskrnl_base != 0)
         {
-            const uint64_t pool_api = loader::get_kernel_export(ntoskrnl_base, "ExAllocatePoolWithTag");
+            const uint64_t pool_api = loader::get_kernel_export(&g_runtime_context.loader_ctx, g_runtime_context.ntoskrnl_base, "ExAllocatePoolWithTag");
             if (pool_api)
             {
-                logs::print("[Step 1] Success: ExAllocatePoolWithTag = 0x%p\n", pool_api);
+                logs::print(&g_runtime_context.log_ctx, "[Step 1] Success: ExAllocatePoolWithTag = 0x%p\n", pool_api);
             }
             else
             {
-                logs::print("[Step 1] ERROR: Failed to resolve ExAllocatePoolWithTag from 0x%p\n", ntoskrnl_base);
+                logs::print(&g_runtime_context.log_ctx, "[Step 1] ERROR: Failed to resolve ExAllocatePoolWithTag from 0x%p\n", g_runtime_context.ntoskrnl_base);
             }
         }
 
-        is_first_vmexit = 0;
+        g_runtime_context.is_first_vmexit = 0;
     }
-
-    static uint8_t has_hidden_heap_pages = 0;
-    static uint64_t vmexit_count = 0;
 
     // 业务说明：按 VMExit 次数触发堆页隐藏流程。
     // 输入：VMExit 计数；输出：隐藏状态；规则：达到阈值才执行；异常：不抛出。
-    if (has_hidden_heap_pages == 0)
+    if (g_runtime_context.has_hidden_heap_pages == 0)
     {
-        vmexit_count++;
+        g_runtime_context.vmexit_count++;
 
-        if (vmexit_count >= 5)
+        if (g_runtime_context.vmexit_count >= 5)
         {
             // 业务说明：达到阈值后隐藏堆页。
             // 输入：CR3 与阈值；输出：隐藏结果；规则：成功后标记完成；异常：不抛出。
-            has_hidden_heap_pages = slat::hide_heap_pages(slat::hyperv_cr3());
+            g_runtime_context.has_hidden_heap_pages = slat::hide_heap_pages(
+                &g_runtime_context.slat_ctx, 
+                slat::hyperv_cr3(&g_runtime_context.slat_ctx),
+                g_runtime_context.heap_ctx.initial_physical_base,
+                g_runtime_context.heap_ctx.initial_size
+            );
 
-            if (has_hidden_heap_pages == 1)
+            if (g_runtime_context.has_hidden_heap_pages == 1)
             {
-                logs::print("[Runtime] Heap memory hiding complete (Total 2M VMExits threshold met).\n");
+                logs::print(&g_runtime_context.log_ctx, "[Runtime] Heap memory hiding complete (Total 2M VMExits threshold met).\n");
             }
         }
     }
@@ -207,9 +209,9 @@ void set_vmexit_runtime_state(std::uint8_t* original_vmexit_handler_routine, con
 {
     // 业务说明：保存 VMExit 处理器与 UEFI 镜像信息，供清理流程使用。
     // 输入：原始 VMExit 处理器与镜像信息；输出：缓存状态；规则：入口阶段设置；异常：不抛出。
-    original_vmexit_handler = original_vmexit_handler_routine;
-    uefi_boot_physical_base_address = uefi_boot_physical_base_address_in;
-    uefi_boot_image_size = uefi_boot_image_size_in;
+    g_runtime_context.original_vmexit_handler = original_vmexit_handler_routine;
+    g_runtime_context.uefi_boot_physical_base_address = uefi_boot_physical_base_address_in;
+    g_runtime_context.uefi_boot_image_size = uefi_boot_image_size_in;
 }
 
 /**
@@ -224,7 +226,7 @@ void set_ntoskrnl_base(const std::uint64_t ntoskrnl_base_in)
 {
     // 业务说明：记录 ntoskrnl 基址，供导出解析使用。
     // 输入：ntoskrnl_base_in；输出：缓存状态；规则：入口阶段设置；异常：不抛出。
-    ntoskrnl_base = ntoskrnl_base_in;
+    g_runtime_context.ntoskrnl_base = ntoskrnl_base_in;
 }
 
 /**
@@ -237,7 +239,7 @@ void set_ntoskrnl_base(const std::uint64_t ntoskrnl_base_in)
  */
 std::uint64_t get_ntoskrnl_base()
 {
-    return ntoskrnl_base;
+    return g_runtime_context.ntoskrnl_base;
 }
 
 /**
@@ -263,6 +265,6 @@ std::uint64_t vmexit_handler_detour(const std::uint64_t a1, const std::uint64_t 
         return do_vmexit_premature_return();
     }
 
-    const auto original_vmexit_handler_function = reinterpret_cast<std::uint64_t(*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t)>(original_vmexit_handler);
+    const auto original_vmexit_handler_function = reinterpret_cast<std::uint64_t(*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t)>(g_runtime_context.original_vmexit_handler);
     return original_vmexit_handler_function(a1, a2, a3, a4);
 }

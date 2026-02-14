@@ -1,5 +1,5 @@
 #pragma once
-#include <structures/trap_frame.h>
+#include "../../shared/structures/trap_frame.h"
 
 union hypercall_info_t;
 

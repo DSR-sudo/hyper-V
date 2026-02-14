@@ -14,7 +14,7 @@ if exist "%boot_directory%bootmgfw.original.efi" (
     copy /Y %~dp0uefi-boot.efi %boot_directory%bootmgfw.efi
     copy /Y %~dp0hyperv-attachment.dll %boot_directory%
 
-    bcdedit /set hypervisorlaunchtype auto
+    
 
     echo hyper-reV will load at next boot
 )
