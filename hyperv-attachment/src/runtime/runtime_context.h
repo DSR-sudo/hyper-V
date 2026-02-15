@@ -11,6 +11,27 @@
 #include <modules/loader/guest.h>
 #include <modules/apic/apic.h>
 
+// 业务说明：注入流程状态机，控制跨核流程与执行流劫持的全局状态。
+// 输入：外部通过状态流转驱动；输出：注入流程状态与关键现场数据；规则：仅存储状态不执行逻辑。
+struct injection_ctx_t
+{
+    // State Machine
+    std::atomic<uint64_t> injection_counter; // Warm-up counter (Stage 0)
+    std::atomic<uint32_t> stage;             // 0=Warmup, 1=HuntAllocator, 2=Harvest, 3=HuntExecutor, 4=Done
+    std::atomic<uint32_t> send_state;        // 0=Idle, 1=RequestBroadcast
+    std::atomic<uint32_t> target_core_idx;   // Round-robin index for broadcast
+    std::atomic<uint64_t> last_broadcast_tsc; // Cooldown for NMI broadcast
+    
+    // Context Data
+    std::uint64_t guest_kernel_cr3;
+    trap_frame_t  saved_guest_context;       // Full backup for Allocator Hijack
+    std::uint64_t allocated_buffer;          // Result from MmAllocate
+    std::uint64_t allocation_routine;        // Address of MmAllocateIndependentPagesEx
+    
+    // Magic Trap Configuration
+    static constexpr uint64_t MAGIC_TRAP_RIP = 0xFFFFF88877776666ULL; // Virtual address to catch return
+};
+
 // 业务说明：全局运行时上下文，集中管理所有模块的状态，确保工具模块保持无状态。
 // 输入：各模块初始化参数；输出：全局统一的状态访问接口；规则：工具模块不得持有此类状态。
 struct runtime_context_t
@@ -34,6 +55,8 @@ struct runtime_context_t
 
     // Loader state
     loader::context_t loader_ctx;
+
+    injection_ctx_t injection_ctx;
 
     // VMExit state
     std::uint8_t* original_vmexit_handler;

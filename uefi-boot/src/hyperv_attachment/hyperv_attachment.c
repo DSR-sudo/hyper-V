@@ -1,4 +1,4 @@
-#include "hyperv_attachment.h"
+﻿#include "hyperv_attachment.h"
 #include "../memory_manager/memory_manager.h"
 #include "../structures/relocation_entry.h"
 #include "../image/image.h"

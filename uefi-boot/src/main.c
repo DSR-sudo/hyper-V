@@ -1,4 +1,4 @@
-#include <Uefi.h>
+﻿#include <Uefi.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Guid/SmBios.h>
 

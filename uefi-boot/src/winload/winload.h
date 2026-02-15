@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <Library/UefiLib.h>
 #include <ia32-doc/ia32_compact.h>
 

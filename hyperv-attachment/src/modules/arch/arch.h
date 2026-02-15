@@ -13,6 +13,7 @@ namespace arch
 	std::uint8_t is_non_maskable_interrupt_exit(std::uint64_t vmexit_reason);
 
 	cr3 get_guest_cr3();
+	std::uint8_t get_guest_cpl();
 
 	cr3 get_slat_cr3();
 	void set_slat_cr3(cr3 slat_cr3);
@@ -26,6 +27,11 @@ namespace arch
 
 	std::uint64_t get_guest_rip();
 	void set_guest_rip(std::uint64_t guest_rip);
+
+	std::uint64_t get_guest_rflags();
+	void set_guest_rflags(std::uint64_t guest_rflags);
+
+	std::uint64_t get_guest_cr8();
 
 	void advance_guest_rip();
 

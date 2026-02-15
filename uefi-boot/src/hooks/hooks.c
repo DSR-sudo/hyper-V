@@ -1,4 +1,4 @@
-#include "hooks.h"
+﻿#include "hooks.h"
 #include "../memory_manager/memory_manager.h"
 
 EFI_STATUS hook_create(hook_data_t* hook_data_out, void* subroutine_to_hook, void* subroutine_to_jmp_to)

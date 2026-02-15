@@ -11,6 +11,7 @@
 #include "../arch/arch.h"
 #include "../slat/cr3/cr3.h"
 #include "../memory_manager/memory_manager.h"
+#include "../../runtime/runtime_context.h"
 
 namespace loader {
 
@@ -180,6 +181,162 @@ uint64_t get_kernel_export(context_t* ctx, const uint64_t module_base, const cha
     }
 
     return 0;
+}
+
+/**
+ * @description 在内核模块内执行特征码扫描。
+ * @param {uint64_t} module_base 模块基址。
+ * @param {size_t} module_size 模块大小。
+ * @param {const char*} pattern 特征码字节序列。
+ * @param {const char*} mask 特征码掩码。
+ * @return {uint64_t} 匹配地址，失败返回 0。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto addr = find_pattern_in_module(base, size, pat, mask);
+ */
+uint64_t find_pattern_in_module(const uint64_t module_base, const size_t module_size, const char* pattern, const char* mask)
+{
+    // 业务说明：按页读取内核模块内存并执行带掩码的线性匹配扫描。
+    // 输入：模块基址/大小/特征码；输出：匹配地址；规则：读取失败或未命中返回 0；异常：不抛出。
+    if (!module_base || !module_size || !pattern || !mask) {
+        return 0;
+    }
+
+    const cr3 guest_cr3 = g_runtime_context.loader_ctx.guest_cr3;
+    const cr3 slat_cr3 = g_runtime_context.loader_ctx.slat_cr3;
+
+    if (guest_cr3.flags == 0 || slat_cr3.flags == 0) {
+        return 0;
+    }
+
+    size_t pattern_len = 0;
+    while (mask[pattern_len] != '\0') {
+        pattern_len++;
+    }
+
+    if (pattern_len == 0) {
+        return 0;
+    }
+
+    // Use a fixed size buffer on stack if it's small enough, otherwise the compiler might insert __chkstk
+    // For Hypervisor, we should avoid large stack allocations. 
+    // Let's use a smaller chunk size to avoid __chkstk.
+    const size_t chunk_size = 0x800; 
+    const size_t extra_size = 0x100;
+    
+    uint8_t buffer[0x800 + 0x100] = {}; 
+    size_t offset = 0;
+    size_t carry = 0;
+
+    while (offset < module_size) {
+        size_t to_read = module_size - offset;
+        if (to_read > chunk_size) {
+            to_read = chunk_size;
+        }
+
+        const bool read_ok = memory_manager::operate_on_guest_virtual_memory(
+            slat_cr3,
+            buffer + carry,
+            module_base + offset,
+            guest_cr3,
+            to_read,
+            memory_operation_t::read_operation
+        ) == to_read;
+
+        if (!read_ok) {
+            return 0;
+        }
+
+        const size_t scan_len = carry + to_read;
+
+        for (size_t i = 0; i + pattern_len <= scan_len; ++i) {
+            bool match = true;
+            for (size_t j = 0; j < pattern_len; ++j) {
+                if (mask[j] == 'x' && buffer[i + j] != static_cast<std::uint8_t>(pattern[j])) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                return module_base + (offset - carry) + i;
+            }
+        }
+
+        if (pattern_len > 1) {
+            carry = pattern_len - 1;
+            if (carry > scan_len) {
+                carry = scan_len;
+            }
+            if (carry > 0) {
+                crt::copy_memory(buffer, buffer + scan_len - carry, carry);
+            }
+        } else {
+            carry = 0;
+        }
+
+        offset += to_read;
+    }
+
+    return 0;
+}
+
+/**
+ * @description 解析 MmAllocateIndependentPagesEx 的内核地址。
+ * @param {uint64_t} ntoskrnl_base ntoskrnl 基址。
+ * @return {uint64_t} 解析后的函数地址，失败返回 0。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto addr = resolve_mm_allocate_independent_pages_ex(nt_base);
+ */
+uint64_t resolve_mm_allocate_independent_pages_ex(const uint64_t ntoskrnl_base)
+{
+    // 业务说明：从 ntoskrnl 读取 PE 头并扫描特征码，解析 E8 相对调用得到函数地址。
+    // 输入：ntoskrnl_base；输出：函数地址；规则：PE 校验或读取失败返回 0；异常：不抛出。
+    if (!ntoskrnl_base) {
+        return 0;
+    }
+
+    const cr3 guest_cr3 = g_runtime_context.loader_ctx.guest_cr3;
+    const cr3 slat_cr3 = g_runtime_context.loader_ctx.slat_cr3;
+
+    if (guest_cr3.flags == 0 || slat_cr3.flags == 0) {
+        return 0;
+    }
+
+    auto read_guest = [&](uint64_t gva, void* buf, uint64_t size) -> bool {
+        return memory_manager::operate_on_guest_virtual_memory(
+            slat_cr3, buf, gva, guest_cr3, size, memory_operation_t::read_operation
+        ) == size;
+    };
+
+    image_dos_header_t dos_header;
+    if (!read_guest(ntoskrnl_base, &dos_header, sizeof(dos_header)) ||
+        dos_header.e_magic != IMAGE_DOS_SIGNATURE) {
+        return 0;
+    }
+
+    image_nt_headers64_t nt_headers;
+    if (!read_guest(ntoskrnl_base + dos_header.e_lfanew, &nt_headers, sizeof(nt_headers)) ||
+        nt_headers.signature != IMAGE_NT_SIGNATURE) {
+        return 0;
+    }
+
+    const size_t module_size = nt_headers.optional_header.size_of_image;
+    const char* pattern = "\x41\x8B\xD6\xB9\x00\x10\x00\x00\xE8\x00\x00\x00\x00\x48\x8B\xD8";
+    const char* mask = "xxxxxxxxx????xxx";
+
+    const uint64_t match = find_pattern_in_module(ntoskrnl_base, module_size, pattern, mask);
+    if (!match) {
+        return 0;
+    }
+
+    int32_t relative_offset = 0;
+    if (!read_guest(match + 9, &relative_offset, sizeof(relative_offset))) {
+        return 0;
+    }
+
+    const uint64_t next_instruction = match + 8 + 5;
+    return next_instruction + static_cast<int64_t>(relative_offset);
 }
 
 // =============================================================================

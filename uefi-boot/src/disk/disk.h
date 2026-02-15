@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <Library/ShellLib.h>
 
 EFI_STATUS disk_get_all_file_system_handles(EFI_HANDLE** handle_list_out, UINT64* handle_count_out);

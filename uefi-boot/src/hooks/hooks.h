@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <Library/UefiLib.h>
 
 typedef union _parted_address_t

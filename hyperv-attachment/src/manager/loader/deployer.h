@@ -36,4 +36,17 @@ deploy_result_t deploy_rwbase_payload(context_t* ctx, uint64_t ntoskrnl_base);
 // Check if payloads are ready for deployment
 bool is_payload_ready();
 
+// =============================================================================
+// Dynamic Injection Helpers (Stage Machine Support)
+// =============================================================================
+
+// Stage 1: Hijack current thread to call MmAllocateIndependentPagesEx
+bool prepare_allocation_hijack(context_t* ctx, void* trap_frame);
+
+// Stage 2: Harvest allocation result (RAX) and restore original context
+bool harvest_allocation_result(context_t* ctx, void* trap_frame);
+
+// Stage 3: Write payload to allocated memory and hijack execution
+bool execute_payload_hijack(context_t* ctx, void* trap_frame);
+
 } // namespace loader

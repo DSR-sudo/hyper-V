@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <Library/UefiLib.h>
 #include <IndustryStandard/PeImage.h>
 

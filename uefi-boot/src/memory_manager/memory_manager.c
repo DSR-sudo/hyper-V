@@ -1,4 +1,4 @@
-#include "memory_manager.h"
+﻿#include "memory_manager.h"
 #include <Library/UefiBootServicesTableLib.h>
 
 #include <intrin.h>

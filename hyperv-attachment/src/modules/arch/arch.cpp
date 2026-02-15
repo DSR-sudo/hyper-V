@@ -168,6 +168,21 @@ cr3 arch::get_guest_cr3()
 }
 
 /**
+ * @description 获取当前来宾 CPL (Current Privilege Level)。
+ * @param {void} 无。
+ * @return {std::uint8_t} 来宾 CPL 值 (0-3)。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto cpl = arch::get_guest_cpl();
+ */
+std::uint8_t arch::get_guest_cpl()
+{
+    // 业务说明：从 VMCS 中读取来宾 CS 选择子，低 2 位即为 CPL。
+    // 输入：无；输出：CPL 值；规则：读取 VMCS_GUEST_CS_SELECTOR；异常：不抛出。
+    return static_cast<std::uint8_t>(vmread(VMCS_GUEST_CS_SELECTOR) & 3);
+}
+
+/**
  * @description 获取当前 SLAT CR3。
  * @param {void} 无。
  * @return {cr3} SLAT CR3 结构。
@@ -309,7 +324,52 @@ void arch::set_guest_rip(const std::uint64_t guest_rip)
 }
 
 /**
- * @description 推进来宾 RIP 到下一条指令。
+ * @description 获取来宾 RFLAGS。
+ * @param {void} 无。
+ * @return {std::uint64_t} 来宾 RFLAGS。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto rflags = arch::get_guest_rflags();
+ */
+std::uint64_t arch::get_guest_rflags()
+{
+    // 业务说明：读取 VMCS 中的来宾 RFLAGS。
+    // 输入：无；输出：来宾 RFLAGS；规则：读取 VMCS；异常：不抛出。
+    return vmread(VMCS_GUEST_RFLAGS);
+}
+
+/**
+ * @description 设置来宾 RFLAGS。
+ * @param {const std::uint64_t} guest_rflags 新的来宾 RFLAGS。
+ * @return {void} 无返回值。
+ * @throws {无} 不抛出异常。
+ * @example
+ * arch::set_guest_rflags(rflags);
+ */
+void arch::set_guest_rflags(const std::uint64_t guest_rflags)
+{
+    // 业务说明：更新 VMCS 中的来宾 RFLAGS。
+    // 输入：guest_rflags；输出：VMCS 更新；规则：写入 VMCS；异常：不抛出。
+    vmwrite(VMCS_GUEST_RFLAGS, guest_rflags);
+}
+
+/**
+ * @description 获取当前来宾 CR8 (Task Priority Register)。
+ * @param {void} 无。
+ * @return {std::uint64_t} 来宾 CR8 值。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto cr8 = arch::get_guest_cr8();
+ */
+std::uint64_t arch::get_guest_cr8()
+{
+    // 业务说明：读取 VMCS 中的来宾 CR8 字段。
+    // 输入：无；输出：CR8 值；规则：读取 VMCS (0x6802)；异常：不抛出。
+    return vmread(0x6802); // VMCS_GUEST_CR8
+}
+
+/**
+ * @description 推进来宾 RIP。
  * @param {void} 无。
  * @return {void} 无返回值。
  * @throws {无} 不抛出异常。
@@ -318,9 +378,9 @@ void arch::set_guest_rip(const std::uint64_t guest_rip)
  */
 void arch::advance_guest_rip()
 {
-    // 业务说明：读取当前 RIP 与指令长度并推进到下一条指令。
-    // 输入：无；输出：来宾 RIP 更新；规则：RIP += 指令长度；异常：不抛出。
-    const std::uint64_t guest_rip = get_guest_rip();
-    const std::uint64_t len = get_vmexit_instruction_length();
-    set_guest_rip(guest_rip + len);
+    // 业务说明：读取当前 RIP 与指令长度，计算并更新下一条指令地址。
+    // 输入：无；输出：RIP 更新；规则：RIP += InstructionLength；异常：不抛出。
+    std::uint64_t rip = get_guest_rip();
+    std::uint64_t len = get_vmexit_instruction_length();
+    set_guest_rip(rip + len);
 }

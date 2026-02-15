@@ -1,4 +1,4 @@
-#include "winload.h"
+﻿#include "winload.h"
 #include "../hooks/hooks.h"
 #include "../image/image.h"
 #include "../bootmgfw/bootmgfw.h"

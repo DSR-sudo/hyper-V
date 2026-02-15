@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 typedef struct _relocation_entry_t
 {

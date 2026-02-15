@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <Library/UefiLib.h>
 
 // this image's info - will be zeroed by the hyperv-attachment
