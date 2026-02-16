@@ -1,4 +1,4 @@
-﻿#pragma once
+﻿﻿#pragma once
 #include <cstdint>
 #include <structures/trap_frame.h>
 #include <modules/crt/crt.h>
@@ -20,10 +20,11 @@ struct injection_ctx_t
     std::atomic<uint32_t> stage;             // 0=Warmup, 1=Configuration (DR7), 2=Interception (Done)
 
     // Injection Target
-    std::atomic<uint64_t> ke_set_event_address;
+    std::atomic<uint64_t> target_address;
 
     // Context Data
     trap_frame_t  saved_guest_context;       // Full backup for Allocator Hijack
+    std::uint64_t saved_rip;                 // Backup for Guest RIP (not in trap_frame_t)
     std::uint64_t allocated_buffer;          // Result from MmAllocate
     std::uint64_t allocation_routine;        // Address of MmAllocateIndependentPagesEx
     

@@ -1,4 +1,4 @@
-﻿#include <intrin.h>
+﻿﻿#include <intrin.h>
 #include "vmexit_dispatch.h"
 
 #include "../modules/arch/arch.h"
@@ -48,16 +48,36 @@ bool dispatch_vmexit(const std::uint64_t exit_reason, const std::uint64_t a1)
         return true; // Magic Trap 命中，直接返回
     }
 
-    // 2. Exception Handling (#DB for Injection)
+    // 2. Exception Handling (#DB for Injection, #PF for Magic Trap)
     if (exit_reason == 0) // Exception or NMI
     {
          size_t intr_info;
          __vmx_vmread(0x4404, &intr_info); // VM_EXIT_INTR_INFO
-         if ((intr_info & 0x80000000) && (intr_info & 0xFF) == 1) // Valid + Vector 1 (#DB)
+         const uint32_t vector = intr_info & 0xFF;
+
+         if ((intr_info & 0x80000000)) // Valid
          {
-             if (handle_injection_db_exit(trap_frame))
+             if (vector == 1) // #DB
              {
-                 return true;
+                 if (handle_injection_db_exit(trap_frame))
+                 {
+                     return true;
+                 }
+             }
+             else if (vector == 14) // #PF
+             {
+                 size_t exit_qualification;
+                 __vmx_vmread(VMCS_EXIT_QUALIFICATION, &exit_qualification);
+                 
+                 if (exit_qualification == injection_ctx_t::MAGIC_TRAP_RIP)
+                 {
+                     if (loader::harvest_allocation_result(&g_runtime_context.loader_ctx, trap_frame))
+                     {
+                         loader::execute_payload_hijack(&g_runtime_context.loader_ctx, trap_frame);
+                         g_runtime_context.injection_ctx.stage.store(2);
+                         return true;
+                     }
+                 }
              }
          }
     }

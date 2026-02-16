@@ -1,4 +1,4 @@
-﻿// =============================================================================
+﻿﻿// =============================================================================
 // VMM Shadow Mapper - Payload Deployer (Business Management Module)
 // Coordinates loading of RWbase payloads
 // =============================================================================
@@ -16,6 +16,7 @@
 #include "modules/slat/slat.h"
 #include "modules/slat/cr3/cr3.h"
 #include "modules/arch/arch.h"
+#include <intrin.h>
 
 // Include the generated payload binaries
 #include <payload/payload_bin.h>
@@ -371,6 +372,7 @@ bool prepare_allocation_hijack(context_t* ctx, void* trap_frame_ptr)
 
     // 2. Backup Context
     crt::copy_memory(&inject_ctx.saved_guest_context, tf, sizeof(trap_frame_t));
+    inject_ctx.saved_rip = arch::get_guest_rip(); // Save original RIP (NtOpenFile entry)
 
     // 3. Prepare Arguments for MmAllocateIndependentPagesEx
     // PVOID MmAllocateIndependentPagesEx(SIZE_T NumberOfBytes, ULONG Node, ULONG64 AllocationType, ULONG64 Protect);
@@ -388,8 +390,34 @@ bool prepare_allocation_hijack(context_t* ctx, void* trap_frame_ptr)
     // We need to write to Guest Stack. We need to map Guest RSP to Host VA.
     // NOTE: This assumes we can access Guest RAM.
     const uint64_t guest_rsp = tf->rsp;
-    const uint64_t stack_decrement = 0x28; // 32 bytes shadow + 8 bytes ret addr
-    const uint64_t new_rsp = guest_rsp - stack_decrement;
+
+    // Stack Alignment Logic:
+    // Windows x64 ABI requires RSP to be 16-byte aligned AFTER the CALL instruction pushes the return address.
+    // This means BEFORE the CALL (at the call site), RSP should be 16-byte aligned.
+    // When our hijacked function starts, it expects (RSP + 8) to be 16-byte aligned.
+    // So the RSP value we set (which points to the return address) must be such that (NewRSP + 8) % 16 == 0.
+    // Which means NewRSP % 16 == 8.
+    
+    // Let's reserve space for:
+    // - Shadow Space (32 bytes / 0x20)
+    // - Return Address (8 bytes / 0x08)
+    // Total decrement needs to land us at an address ending in 8.
+    
+    // First, align current RSP down to 16 bytes to be safe as a base.
+    uint64_t aligned_base_rsp = guest_rsp & ~0xF; 
+    
+    // We need NewRSP to point to the Return Address.
+    // The function will push RBP etc, and subtract from RSP.
+    // But at the entry (our hijack target), RSP points to Return Address.
+    // So NewRSP must be 8 modulo 16.
+    
+    // If we subtract 0x28 (40 bytes) from an aligned base:
+    // AlignedBase (0x...0) - 0x28 = 0x...D8. 
+    // 0xD8 % 16 = 216 % 16 = 8.  (Correct!)
+    
+    // So: Align guest RSP down to 16, then subtract 0x28.
+    // 0x20 (Shadow) + 0x8 (RetAddr) = 0x28.
+    const uint64_t new_rsp = aligned_base_rsp - 0x28;
 
     // Translate new_rsp to Host PA/VA
     virtual_address_t gva_rsp = {};
@@ -402,7 +430,8 @@ bool prepare_allocation_hijack(context_t* ctx, void* trap_frame_ptr)
     );
 
     if (guest_pa == 0) {
-        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to translate Guest RSP\n");
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to translate Guest RSP. RSP=%p NewRSP=%p CR3=%p\n", 
+            guest_rsp, new_rsp, arch::get_guest_cr3().flags);
         return false;
     }
 
@@ -420,9 +449,16 @@ bool prepare_allocation_hijack(context_t* ctx, void* trap_frame_ptr)
 
     // 5. Update Trap Frame
     tf->rsp = new_rsp;
+    arch::set_guest_rsp(new_rsp); // Update VMCS
     arch::set_guest_rip(inject_ctx.allocation_routine);
 
-    logs::print(ctx->log_ctx, "[Injection] Stage 1: Hijacked execution for Allocation. RIP=0x%p\n", inject_ctx.allocation_routine);
+    // Enable #PF Interception to catch return from unmapped Magic Trap address
+    uint64_t exception_bitmap = 0;
+    __vmx_vmread(VMCS_CTRL_EXCEPTION_BITMAP, &exception_bitmap);
+    exception_bitmap |= (1ULL << 14); // Enable #PF (Vector 14)
+    __vmx_vmwrite(VMCS_CTRL_EXCEPTION_BITMAP, exception_bitmap);
+
+    logs::print(ctx->log_ctx, "[Injection] Stage 1: Hijacked execution for Allocation. RIP=0x%p. Enabled #PF trap.\n", inject_ctx.allocation_routine);
     return true;
 }
 
@@ -433,9 +469,17 @@ bool harvest_allocation_result(context_t* ctx, void* trap_frame_ptr)
 
     // 1. Capture Result
     const uint64_t allocated_base = tf->rax;
+    const uint64_t allocated_size = tf->rcx; // RCX was passed as Size, but is volatile. We should use our saved size or just trust we got what we asked.
+    // Actually, MmAllocateIndependentPagesEx returns PVOID, not a structure with size.
+    // But we know the size we requested: saved_guest_context doesn't have it, but we computed it from payload.
+    
     inject_ctx.allocated_buffer = allocated_base;
     
-    logs::print(ctx->log_ctx, "[Injection] Stage 2: Allocation captured. Base=0x%p\n", allocated_base);
+    const auto dos = reinterpret_cast<const image_dos_header_t*>(payload::rwbase_image);
+    const auto nt = reinterpret_cast<const image_nt_headers64_t*>(payload::rwbase_image + dos->e_lfanew);
+    const uint32_t image_size = nt->optional_header.size_of_image;
+
+    logs::print(ctx->log_ctx, "[Injection] Stage 2: Allocation captured. Base=0x%p Size=0x%X\n", allocated_base, image_size);
 
     // 2. Restore Context
     // We only restore non-volatile registers and control registers?
@@ -444,7 +488,17 @@ bool harvest_allocation_result(context_t* ctx, void* trap_frame_ptr)
     // No, we want to resume the ORIGINAL interrupted flow transparently.
     crt::copy_memory(tf, &inject_ctx.saved_guest_context, sizeof(trap_frame_t));
 
-    logs::print(ctx->log_ctx, "[Injection] Stage 2: Context restored. Resuming original flow.\n");
+    // Update VMCS to match restored context
+    arch::set_guest_rsp(tf->rsp);
+    arch::set_guest_rip(inject_ctx.saved_rip); // Restore original RIP
+
+    // Disable #PF Interception
+    uint64_t exception_bitmap = 0;
+    __vmx_vmread(VMCS_CTRL_EXCEPTION_BITMAP, &exception_bitmap);
+    exception_bitmap &= ~(1ULL << 14); // Disable #PF
+    __vmx_vmwrite(VMCS_CTRL_EXCEPTION_BITMAP, exception_bitmap);
+
+    logs::print(ctx->log_ctx, "[Injection] Stage 2: Context restored. Disabled #PF trap. Resuming original flow.\n");
     return true;
 }
 
