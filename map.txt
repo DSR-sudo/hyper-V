@@ -68,11 +68,18 @@ Hyper-V Project Detailed Architecture Map
 │   │   │       ├── slat.h              # 接口: slat::set_up, slat::hide_physical_page
 │   │   │       └── slat_def.h          # SLAT 相关结构与常量定义
 │   │   ├── runtime/                    # 运行时分发与核心逻辑调度 (持有状态)
+│   │   │   ├── dispatch/               # VMExit 具体分发处理逻辑
+│   │   │   │   ├── hypercall_exit.cpp  # Hypercall 处理
+│   │   │   │   ├── hypercall_exit.h
+│   │   │   │   ├── injection_exit.cpp  # 注入状态机与劫持逻辑
+│   │   │   │   ├── injection_exit.h
+│   │   │   │   ├── initialization_exit.cpp # 首次运行初始化与清理
+│   │   │   │   └── initialization_exit.h
 │   │   │   ├── payload_validation.cpp  # Payload 合法性校验实现
 │   │   │   ├── payload_validation.h    # 校验接口
 │   │   │   ├── runtime_context.cpp     # 全局运行上下文定义 (中央状态库)
 │   │   │   ├── runtime_context.h       # 接口: g_runtime_context
-│   │   │   ├── vmexit_dispatch.cpp     # VMExit 事件核心分发逻辑
+│   │   │   ├── vmexit_dispatch.cpp     # VMExit 事件核心分发路由
 │   │   │   └── vmexit_dispatch.h       # 分发器接口
 │   │   ├── hypercall/                  # Hypercall 处理 (业务层)
 │   │   │   ├── hypercall.cpp           # Hypercall 逻辑处理实现

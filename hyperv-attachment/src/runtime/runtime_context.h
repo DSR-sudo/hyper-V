@@ -17,13 +17,12 @@ struct injection_ctx_t
 {
     // State Machine
     std::atomic<uint64_t> injection_counter; // Warm-up counter (Stage 0)
-    std::atomic<uint32_t> stage;             // 0=Warmup, 1=HuntAllocator, 2=Harvest, 3=HuntExecutor, 4=Done
-    std::atomic<uint32_t> send_state;        // 0=Idle, 1=RequestBroadcast
-    std::atomic<uint32_t> target_core_idx;   // Round-robin index for broadcast
-    std::atomic<uint64_t> last_broadcast_tsc; // Cooldown for NMI broadcast
-    
+    std::atomic<uint32_t> stage;             // 0=Warmup, 1=Configuration (DR7), 2=Interception (Done)
+
+    // Injection Target
+    std::atomic<uint64_t> ke_set_event_address;
+
     // Context Data
-    std::uint64_t guest_kernel_cr3;
     trap_frame_t  saved_guest_context;       // Full backup for Allocator Hijack
     std::uint64_t allocated_buffer;          // Result from MmAllocate
     std::uint64_t allocation_routine;        // Address of MmAllocateIndependentPagesEx

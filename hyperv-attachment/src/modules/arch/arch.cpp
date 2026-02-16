@@ -100,6 +100,36 @@ std::uint64_t arch::get_vmexit_reason()
 }
 
 /**
+ * @description 获取 Guest IDTR 基址。
+ * @param {void} 无。
+ * @return {std::uint64_t} IDTR 基址。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto idtr_base = arch::get_guest_idtr_base();
+ */
+std::uint64_t arch::get_guest_idtr_base()
+{
+    // 业务说明：读取 VMCS 中的 Guest IDTR Base 字段。
+    // 输入：无；输出：IDTR Base；规则：读取 VMCS；异常：不抛出。
+    return vmread(VMCS_GUEST_IDTR_BASE);
+}
+
+/**
+ * @description 获取 Guest LSTAR (Syscall Entry)。
+ * @param {void} 无。
+ * @return {std::uint64_t} LSTAR 值。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto lstar = arch::get_guest_lstar();
+ */
+std::uint64_t arch::get_guest_lstar()
+{
+    // 业务说明：读取 VMCS 中的 Guest IA32_LSTAR 字段。
+    // 输入：无；输出：LSTAR；规则：读取 VMCS (0x281C)；异常：不抛出。
+    return vmread(0x281C); // VMCS_GUEST_IA32_LSTAR
+}
+
+/**
  * @description 判断 VMExit 是否由 CPUID 指令触发。
  * @param {const std::uint64_t} vmexit_reason VMExit 退出原因。
  * @return {std::uint8_t} 是否为 CPUID 退出。

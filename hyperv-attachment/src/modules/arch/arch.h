@@ -32,6 +32,8 @@ namespace arch
 	void set_guest_rflags(std::uint64_t guest_rflags);
 
 	std::uint64_t get_guest_cr8();
+	std::uint64_t get_guest_idtr_base();
+	std::uint64_t get_guest_lstar();
 
 	void advance_guest_rip();
 

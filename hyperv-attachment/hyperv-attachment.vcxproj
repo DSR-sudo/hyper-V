@@ -180,6 +180,9 @@
     <ClCompile Include="src\runtime\payload_validation.cpp" />
     <ClCompile Include="src\runtime\runtime_context.cpp" />
     <ClCompile Include="src\runtime\vmexit_dispatch.cpp" />
+    <ClCompile Include="src\runtime\dispatch\hypercall_exit.cpp" />
+    <ClCompile Include="src\runtime\dispatch\injection_exit.cpp" />
+    <ClCompile Include="src\runtime\dispatch\initialization_exit.cpp" />
     <ClCompile Include="src\modules\slat\hook\hook.cpp" />
     <ClCompile Include="src\modules\slat\hook\hook_entry.cpp" />
     <ClCompile Include="src\modules\slat\slat.cpp" />
@@ -209,6 +212,9 @@
     <ClInclude Include="src\modules\memory_manager\memory_manager.h" />
     <ClInclude Include="src\runtime\payload_validation.h" />
     <ClInclude Include="src\runtime\vmexit_dispatch.h" />
+    <ClInclude Include="src\runtime\dispatch\hypercall_exit.h" />
+    <ClInclude Include="src\runtime\dispatch\injection_exit.h" />
+    <ClInclude Include="src\runtime\dispatch\initialization_exit.h" />
     <ClInclude Include="src\modules\slat\hook\hook_entry.h" />
     <ClInclude Include="src\modules\slat\hook\hook.h" />
     <ClInclude Include="src\modules\slat\slat.h" />

@@ -344,13 +344,29 @@ UINT64 winload_load_pe_image_detour(bl_file_info_t* file_info, INT32 a2, UINT64*
 
     boot_load_pe_image_t original_subroutine = (boot_load_pe_image_t)winload_load_pe_image_hook_data.hooked_subroutine_address;
 
+    /**
+     * 业务逻辑：虚拟删除 SecureKernel 组件
+     * 
+     * 为了关闭 VBS (Virtualization-Based Security) 而不破坏系统完整性，
+     * 我们在此拦截 securekernel.exe 和 skci.dll 的加载。
+     * 
+     * 通过返回 STATUS_OBJECT_NAME_NOT_FOUND (0xC0000034)，
+     * 我们欺骗 winload 认为这些文件不存在。
+     * winload 会因此触发降级启动逻辑，关闭 VBS，
+     * 从而允许我们的 hvloader 完美接管系统，且不会引起 SFC 或 Windows Update 的报错。
+     */
+    if (StrStr(file_info->file_name, L"securekernel.exe") != NULL || 
+        StrStr(file_info->file_name, L"skci.dll") != NULL)
+    {
+        hook_enable(&winload_load_pe_image_hook_data);
+        return 0xC0000034; // STATUS_OBJECT_NAME_NOT_FOUND
+    }
+
     UINT64 return_value = original_subroutine(file_info, a2, image_base, image_size, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15);
 
     if (StrStr(file_info->file_name, L"hvloader") != NULL)
     {
         hvloader_place_hooks(*image_base, *image_size);
-
-        return return_value;
     }
 
     hook_enable(&winload_load_pe_image_hook_data);
