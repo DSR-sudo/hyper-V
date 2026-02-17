@@ -1,4 +1,4 @@
-﻿﻿// =============================================================================
+// =============================================================================
 // VMM Shadow Mapper - Payload Deployer (Business Management Module)
 // Coordinates loading of RWbase payloads
 // =============================================================================
@@ -182,13 +182,8 @@ static bool allocate_guest_memory(
 
     logs::print(ctx->log_ctx, "[Loader] VMM VA: 0x%p, Guest PA: 0x%p\n", vmm_va, guest_physical);
 
-    constexpr uint64_t KERNEL_HIGH_BASE = 0xFFFF800000000000ULL;
-    const uint64_t guest_va = KERNEL_HIGH_BASE | (guest_physical & 0x0000FFFFFFFFFFFFULL);
-
-    logs::print(ctx->log_ctx, "[Loader] Guest VA (shadow): 0x%p\n", guest_va);
-
     out_info->guest_physical_base = guest_physical;
-    out_info->guest_virtual_base = guest_va;
+    out_info->guest_virtual_base = 0;
     out_info->vmm_mapped_address = vmm_base;
     out_info->size = size;
     out_info->page_count = pages_needed;
@@ -607,7 +602,11 @@ bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
         return false;
     }
 
-    const uint64_t target_va = alloc.guest_virtual_base;
+    const uint64_t target_va = inject_ctx.payload_guest_base.load(std::memory_order_acquire);
+    if (target_va == 0) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Payload Guest VA not initialized\n");
+        return false;
+    }
     inject_ctx.allocated_buffer = target_va;
 
     // 4. Fix Security Cookie

@@ -1,4 +1,4 @@
-﻿﻿#pragma once
+﻿#pragma once
 #include <cstdint>
 #include <structures/trap_frame.h>
 #include <modules/crt/crt.h>

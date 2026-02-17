@@ -1,4 +1,4 @@
-﻿﻿#include "injection_exit.h"
+﻿#include "injection_exit.h"
 #include "../runtime_context.h"
 #include "../../modules/arch/arch.h"
 #include "../../modules/loader/imports.h"

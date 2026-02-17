@@ -1,4 +1,4 @@
-﻿﻿#pragma once
+﻿#pragma once
 // =============================================================================
 // VMM Shadow Mapper - Payload Deployer (Business Management Module)
 // Coordinates loading of RWbase payloads into Guest kernel space.
