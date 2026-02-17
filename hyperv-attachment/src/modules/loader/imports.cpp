@@ -362,6 +362,22 @@ bool resolve_payload_imports(context_t* ctx, void* payload_image, const uint64_t
         return false;
     }
 
+    if (ctx->guest_cr3.flags == 0) {
+        ctx->guest_cr3 = arch::get_guest_cr3();
+    }
+
+    if (ctx->slat_cr3.flags == 0) {
+        ctx->slat_cr3 = slat::hyperv_cr3(&g_runtime_context.slat_ctx);
+    }
+
+    if (ctx->module_cache.ntoskrnl_base == 0) {
+        ctx->module_cache.ntoskrnl_base = ntoskrnl_base;
+    }
+
+    if (!ctx->module_cache.initialized) {
+        init_guest_discovery(ctx, ntoskrnl_base);
+    }
+
     // 业务说明：读取并验证 NT 头。
     // 输入：payload_image；输出：nt_headers；规则：无效返回失败；异常：不抛出。
     const auto nt_headers = get_nt_headers(payload_image);
@@ -539,6 +555,7 @@ bool resolve_payload_imports(context_t* ctx, void* payload_image, const uint64_t
 
     logs::print(ctx->log_ctx, "[Loader] Resolved %d functions from %d modules\n", 
         functions_resolved, modules_resolved);
+    logs::print(ctx->log_ctx, "[Loader] IAT fix completed for image 0x%p\n", payload_image);
     
     return true;
 }

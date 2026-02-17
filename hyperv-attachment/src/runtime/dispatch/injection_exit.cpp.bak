@@ -1,4 +1,4 @@
-﻿﻿#include "injection_exit.h"
+﻿#include "injection_exit.h"
 #include "../runtime_context.h"
 #include "../../modules/arch/arch.h"
 #include "../../modules/loader/imports.h"
@@ -110,31 +110,24 @@ bool process_injection_state_tick(uint64_t guest_rip, trap_frame_t* trap_frame)
             // Transition Trigger: Must be in Kernel Mode (CPL=0) to resolve exports safely
             if (arch::get_guest_cpl() == 0)
             {
-                if (!loader::is_payload_ready())
-                {
-                    return false;
-                }
-
                 const uint64_t target_func = resolve_target_function();
-                if (target_func == 0)
+                if (target_func != 0)
                 {
-                    return false;
+                    ctx.target_address.store(target_func);
+
+                    // 1. Set Global NMI Ready Bitmap (Mark all cores as needing config)
+                    interrupts::set_all_nmi_ready(&g_runtime_context.interrupts_ctx);
+
+                    // 2. Broadcast NMI to all other cores
+                    interrupts::send_nmi_all_but_self(&g_runtime_context.interrupts_ctx);
+
+                    // 3. Transition to Stage 1 (Configuration)
+                    ctx.stage.store(1);
+
+                    logs::print(&g_runtime_context.log_ctx, 
+                        "[Inject] Warm-up complete. Target found at %p. Broadcast NMI sent. Entering Stage 1.\n", 
+                        target_func);
                 }
-
-                ctx.target_address.store(target_func);
-
-                // 1. Set Global NMI Ready Bitmap (Mark all cores as needing config)
-                interrupts::set_all_nmi_ready(&g_runtime_context.interrupts_ctx);
-
-                // 2. Broadcast NMI to all other cores
-                interrupts::send_nmi_all_but_self(&g_runtime_context.interrupts_ctx);
-
-                // 3. Transition to Stage 1 (Configuration)
-                ctx.stage.store(1);
-
-                logs::print(&g_runtime_context.log_ctx, 
-                    "[Inject] Warm-up complete. Target found at %p. Broadcast NMI sent. Entering Stage 1.\n", 
-                    target_func);
             }
         }
     }
@@ -210,13 +203,6 @@ bool handle_injection_db_exit(trap_frame_t* trap_frame)
         return false;
     }
 
-    if (ctx.stage.load() != 1)
-    {
-        clear_injection_dr7();
-        arch::set_guest_rflags(arch::get_guest_rflags() | (1ULL << 16));
-        return true;
-    }
-
     // IRQL CHECK:
     // MmAllocateIndependentPagesEx requires IRQL <= APC_LEVEL (0 or 1).
     // NtOpenFile is guaranteed to be PASSIVE_LEVEL (0).
@@ -244,18 +230,37 @@ bool handle_injection_db_exit(trap_frame_t* trap_frame)
     // So the guest never sees the #DB or the DR6 status.
     // We just resume execution.
 
+    // If active stage (1), attempt to claim the hijack task
+    // Use CAS to ensure ONLY ONE core performs the hijack
     uint32_t expected = 1;
     if (ctx.stage.compare_exchange_strong(expected, 2))
     {
-        if (!loader::execute_payload_hijack(&g_runtime_context.loader_ctx, trap_frame))
+        // Populate Trap Frame with VMCS Guest State
+        // VMExit handler assembly does not populate RSP/RIP from VMCS automatically.
+        trap_frame->rsp = arch::get_guest_rsp();
+        // trap_frame->rip is not available in standard trap_frame_t, so we don't save it here.
+        // It will be saved separately in prepare_allocation_hijack if needed.
+
+        logs::print(&g_runtime_context.log_ctx, "[Inject] Intercepted NtOpenFile on Core %d! Starting Hijack...\n", apic_t::current_apic_id());
+        
+        // Perform the Hijack
+        if (loader::prepare_allocation_hijack(&g_runtime_context.loader_ctx, trap_frame))
         {
-            logs::print(&g_runtime_context.log_ctx, "[Inject] FATAL: Payload execution failed! Aborting injection.\n");
-            ctx.stage.store(3);
+             // Success: Stage is now 2 (Wait for Magic Trap)
+        }
+        else
+        {
+             // Failed: Log and revert to retry (or handle as fatal)
+             logs::print(&g_runtime_context.log_ctx, "[Inject] FATAL: Hijack preparation failed! Aborting injection.\n");
+             ctx.stage.store(3); // Stage 3 = Done/Failed. Do not retry to avoid infinite loop.
         }
     }
 
     // Always cleanup DR7 to prevent further #DB exits on this core
     clear_injection_dr7();
+    
+    // If we didn't hijack (stage was not 1, or CAS failed), we just resume original execution.
+    // If we DID hijack, prepare_allocation_hijack updated RIP/RSP, so we resume to new target.
     
     // Resume Flag (RF) handling:
     // If we modified RIP (Hijack case), we don't strictly need RF as we are at a new instruction.

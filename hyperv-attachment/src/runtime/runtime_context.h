@@ -27,6 +27,8 @@ struct injection_ctx_t
     std::uint64_t saved_rip;                 // Backup for Guest RIP (not in trap_frame_t)
     std::uint64_t allocated_buffer;          // Result from MmAllocate
     std::uint64_t allocation_routine;        // Address of MmAllocateIndependentPagesEx
+    std::atomic<std::uint64_t> payload_guest_base;
+    std::atomic<std::uint64_t> payload_entry;
     
     // Magic Trap Configuration
     static constexpr uint64_t MAGIC_TRAP_RIP = 0xFFFFF88877776666ULL; // Virtual address to catch return
