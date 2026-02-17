@@ -1,4 +1,4 @@
-﻿﻿// =============================================================================
+﻿// =============================================================================
 // VMM Shadow Mapper - Payload Deployer (Business Management Module)
 // Coordinates loading of RWbase payloads
 // =============================================================================
@@ -420,9 +420,8 @@ bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
 
     const uint64_t target_va = inject_ctx.payload_guest_base.load(std::memory_order_acquire);
 
-    logs::print(ctx->log_ctx, "[Injection] STAGE 3 SKIPPED: Allocated Address=0x%p, Size=0x%X\n", target_va, image_size);
+    // logs::print(ctx->log_ctx, "[Injection] STAGE 3 SKIPPED: Allocated Address=0x%p, Size=0x%X\n", target_va, image_size);
 
-    /*
     allocation_info_t alloc = {};
     if (!allocate_guest_memory(ctx, image_size, &alloc)) {
         logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to allocate Guest memory for RWbase\n");
@@ -478,7 +477,6 @@ bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
     arch::set_guest_rflags(arch::get_guest_rflags() & ~0x100); // Clear TF (Bit 8)
 
     logs::print(ctx->log_ctx, "[Injection] Stage 3: Payload deployed. Hijacking RIP to 0x%p\n", entry_va);
-    */
     return true;
 }
 
