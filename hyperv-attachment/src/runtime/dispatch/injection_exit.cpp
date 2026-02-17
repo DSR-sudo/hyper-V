@@ -247,9 +247,10 @@ bool handle_injection_db_exit(trap_frame_t* trap_frame)
     uint32_t expected = 1;
     if (ctx.stage.compare_exchange_strong(expected, 2))
     {
-        if (!loader::execute_payload_hijack(&g_runtime_context.loader_ctx, trap_frame))
+        // Stage 1 -> 2: Hijack execution to allocate memory (MmAllocateIndependentPagesEx)
+        if (!loader::prepare_allocation_hijack(&g_runtime_context.loader_ctx, trap_frame))
         {
-            logs::print(&g_runtime_context.log_ctx, "[Inject] FATAL: Payload execution failed! Aborting injection.\n");
+            logs::print(&g_runtime_context.log_ctx, "[Inject] FATAL: Allocation hijack failed! Aborting injection.\n");
             ctx.stage.store(3);
         }
     }

@@ -22,17 +22,6 @@ enum class deploy_result_t : uint32_t {
     entrypoint_execution_failed,
 };
 
-// Deploy RWbase payload (persistent service, SLAT hidden)
-// - Validates embedded payload
-// - Allocates executable memory in Guest
-// - Applies relocations, resolves imports, fixes cookie
-// - Executes EntryPoint
-// - Same as original payload but with SLAT No-Access hiding after setup
-// @param ctx: Loader context
-// @param ntoskrnl_base: Guest ntoskrnl.exe base address
-// @return: Deployment result code
-deploy_result_t deploy_rwbase_payload(context_t* ctx, uint64_t ntoskrnl_base, uint64_t target_guest_entry);
-
 // Check if payloads are ready for deployment
 bool is_payload_ready();
 
