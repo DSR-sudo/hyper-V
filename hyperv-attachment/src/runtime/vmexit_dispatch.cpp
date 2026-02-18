@@ -71,10 +71,23 @@ bool dispatch_vmexit(const std::uint64_t exit_reason, const std::uint64_t a1)
                  
                  if (exit_qualification == injection_ctx_t::MAGIC_TRAP_RIP)
                  {
+                    if (g_runtime_context.injection_ctx.stage.load() == 3)
+                    {
+                        crt::copy_memory(trap_frame, &g_runtime_context.injection_ctx.saved_guest_context, sizeof(trap_frame_t));
+                        arch::set_guest_rsp(trap_frame->rsp);
+                        arch::set_guest_rip(g_runtime_context.injection_ctx.saved_rip);
+
+                        uint64_t exception_bitmap = 0;
+                        __vmx_vmread(VMCS_CTRL_EXCEPTION_BITMAP, &exception_bitmap);
+                        exception_bitmap &= ~(1ULL << 14);
+                        __vmx_vmwrite(VMCS_CTRL_EXCEPTION_BITMAP, exception_bitmap);
+
+                        g_runtime_context.injection_ctx.stage.store(2);
+                        return true;
+                    }
                      if (loader::harvest_allocation_result(&g_runtime_context.loader_ctx, trap_frame))
                      {
                          loader::execute_payload_hijack(&g_runtime_context.loader_ctx, trap_frame);
-                         g_runtime_context.injection_ctx.stage.store(2);
                          return true;
                      }
                  }

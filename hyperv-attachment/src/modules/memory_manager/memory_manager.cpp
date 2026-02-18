@@ -287,3 +287,116 @@ std::uint64_t memory_manager::operate_on_guest_virtual_memory(const cr3 slat_cr3
 
 	return bytes_read;
 }
+
+/**
+ * @description 修改来宾虚拟地址范围内的页表权限。
+ * @param {const cr3} guest_cr3 来宾 CR3。
+ * @param {const cr3} slat_cr3 SLAT CR3。
+ * @param {const std::uint64_t} guest_base 来宾地址起始基址。
+ * @param {const std::uint64_t} offset 基址偏移。
+ * @param {const std::uint64_t} size 范围大小。
+ * @param {const bool} allow_read 允许读。
+ * @param {const bool} allow_write 允许写。
+ * @param {const bool} allow_execute 允许执行。
+ * @return {bool} 是否修改成功。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto ok = memory_manager::set_guest_page_permissions(cr3_value, slat_cr3, base, 0, size, true, true, true);
+ */
+bool memory_manager::set_guest_page_permissions(const cr3 guest_cr3, const cr3 slat_cr3, const std::uint64_t guest_base, const std::uint64_t offset, const std::uint64_t size, const bool allow_read, const bool allow_write, const bool allow_execute)
+{
+	// 业务说明：按页遍历来宾页表并更新 PTE 权限位。
+	// 输入：guest_cr3/slat_cr3/guest_base/offset/size/allow_*；输出：是否更新成功；规则：遇到无效页表即失败；异常：不抛出。
+	if (size == 0)
+	{
+		return false;
+	}
+
+	const std::uint64_t start = guest_base + offset;
+	const std::uint64_t end = start + size;
+	std::uint64_t current = start;
+
+	while (current < end)
+	{
+		virtual_address_t gva = { };
+		gva.address = current;
+
+		pml4e_64* const pml4 = static_cast<pml4e_64*>(map_guest_physical(slat_cr3, guest_cr3.address_of_page_directory << 12));
+		if (pml4 == nullptr)
+		{
+			return false;
+		}
+
+		pml4e_64* const pml4e = &pml4[gva.pml4_idx];
+		if (pml4e->present == 0)
+		{
+			return false;
+		}
+
+		pdpte_64* const pdpt = static_cast<pdpte_64*>(map_guest_physical(slat_cr3, pml4e->page_frame_number << 12));
+		if (pdpt == nullptr)
+		{
+			return false;
+		}
+
+		pdpte_64* const pdpte = &pdpt[gva.pdpt_idx];
+		if (pdpte->present == 0)
+		{
+			return false;
+		}
+
+		if (pdpte->large_page == 1)
+		{
+			auto* const large_pdpte = reinterpret_cast<pdpte_1gb_64*>(pdpte);
+			large_pdpte->present = allow_read ? 1 : 0;
+			large_pdpte->write = allow_write ? 1 : 0;
+			large_pdpte->execute_disable = allow_execute ? 0 : 1;
+
+			current = (current & ~((1ull << 30) - 1)) + (1ull << 30);
+			continue;
+		}
+
+		pde_64* const pd = static_cast<pde_64*>(map_guest_physical(slat_cr3, pdpte->page_frame_number << 12));
+		if (pd == nullptr)
+		{
+			return false;
+		}
+
+		pde_64* const pde = &pd[gva.pd_idx];
+		if (pde->present == 0)
+		{
+			return false;
+		}
+
+		if (pde->large_page == 1)
+		{
+			auto* const large_pde = reinterpret_cast<pde_2mb_64*>(pde);
+			large_pde->present = allow_read ? 1 : 0;
+			large_pde->write = allow_write ? 1 : 0;
+			large_pde->execute_disable = allow_execute ? 0 : 1;
+
+			current = (current & ~((1ull << 21) - 1)) + (1ull << 21);
+			continue;
+		}
+
+		pte_64* const pt = static_cast<pte_64*>(map_guest_physical(slat_cr3, pde->page_frame_number << 12));
+		if (pt == nullptr)
+		{
+			return false;
+		}
+
+		pte_64* const pte = &pt[gva.pt_idx];
+		if (pte->present == 0)
+		{
+			return false;
+		}
+
+		pte->present = allow_read ? 1 : 0;
+		pte->write = allow_write ? 1 : 0;
+		pte->execute_disable = allow_execute ? 0 : 1;
+
+		current = (current & ~0xFFFull) + 0x1000;
+	}
+
+	return true;
+}
