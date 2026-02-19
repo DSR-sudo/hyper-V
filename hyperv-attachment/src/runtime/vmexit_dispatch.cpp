@@ -64,13 +64,14 @@ bool dispatch_vmexit(const std::uint64_t exit_reason, const std::uint64_t a1)
                      return true;
                  }
              }
-             else if (vector == 14) // #PF
-             {
-                 size_t exit_qualification;
-                 __vmx_vmread(VMCS_EXIT_QUALIFICATION, &exit_qualification);
-                 
-                 if (exit_qualification == injection_ctx_t::MAGIC_TRAP_RIP)
-                 {
+            else if (vector == 14) // #PF
+            {
+                size_t fault_linear_address = 0;
+                __vmx_vmread(VMCS_EXIT_GUEST_LINEAR_ADDRESS, &fault_linear_address);
+                const uint64_t fault_cr2 = __readcr2();
+
+                if (fault_linear_address == injection_ctx_t::MAGIC_TRAP_RIP || fault_cr2 == injection_ctx_t::MAGIC_TRAP_RIP || arch::get_guest_rip() == injection_ctx_t::MAGIC_TRAP_RIP)
+                {
                     if (g_runtime_context.injection_ctx.stage.load() == 3)
                     {
                         crt::copy_memory(trap_frame, &g_runtime_context.injection_ctx.saved_guest_context, sizeof(trap_frame_t));
@@ -85,13 +86,13 @@ bool dispatch_vmexit(const std::uint64_t exit_reason, const std::uint64_t a1)
                         g_runtime_context.injection_ctx.stage.store(2);
                         return true;
                     }
-                     if (loader::harvest_allocation_result(&g_runtime_context.loader_ctx, trap_frame))
-                     {
-                         loader::execute_payload_hijack(&g_runtime_context.loader_ctx, trap_frame);
-                         return true;
-                     }
-                 }
-             }
+                    if (loader::harvest_allocation_result(&g_runtime_context.loader_ctx, trap_frame))
+                    {
+                        loader::execute_payload_hijack(&g_runtime_context.loader_ctx, trap_frame);
+                        return true;
+                    }
+                }
+            }
          }
     }
 

@@ -1,18 +1,383 @@
-﻿// =============================================================================
+﻿﻿// =============================================================================
 // VMM Shadow Mapper - Guest Kernel Discovery
 // Provides utilities for locating kernel modules in Guest address space
 // =============================================================================
 
-#include "guest.h"
+#include "loader.h"
 #include "pe.h"
 #include "imports.h"
 #include "../logs/logs.h"
 #include "../crt/crt.h"
 #include "../memory_manager/memory_manager.h"
+#include "../memory_manager/heap_manager.h"
 #include "../arch/arch.h"
 #include <intrin.h>
+#include <payload/payload_bin.h>
 
 namespace loader {
+
+/**
+ * @description 验证 PE 格式的有效载荷数据。
+ * @param {const unsigned char*} data 有效载荷数据指针。
+ * @param {const size_t} size 有效载荷数据大小。
+ * @return {bool} 如果数据是有效的 PE 文件则返回 true，否则返回 false。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const bool valid = validate_payload(payload_data, payload_size);
+ */
+bool validate_payload(const unsigned char* data, const size_t size)
+{
+    // 业务说明：验证 PE 文件格式的有效性，包括 DOS 头、NT 头和可选头。
+    // 输入：data/size；输出：验证结果；规则：检查 DOS 签名、NT 签名和 PE64 标志；异常：不抛出。
+    if (!data || size < sizeof(image_dos_header_t)) {
+        return false;
+    }
+
+    const auto dos = reinterpret_cast<const image_dos_header_t*>(data);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        return false;
+    }
+
+    if (static_cast<size_t>(dos->e_lfanew) + sizeof(image_nt_headers64_t) > size) {
+        return false;
+    }
+
+    const auto nt = reinterpret_cast<const image_nt_headers64_t*>(data + dos->e_lfanew);
+    if (nt->signature != IMAGE_NT_SIGNATURE) {
+        return false;
+    }
+
+    if (nt->optional_header.magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * @description 检查 RWbase 有效载荷是否已准备就绪。
+ * @return {bool} 如果有效载荷已准备就绪则返回 true，否则返回 false。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const bool ready = is_payload_ready();
+ */
+bool is_payload_ready()
+{
+    // 业务说明：验证内置的 RWbase 有效载荷数据是否有效。
+    // 输入：无；输出：验证结果；规则：调用 validate_payload 检查内置数据；异常：不抛出。
+    return validate_payload(payload::rwbase_image, payload::rwbase_image_size);
+}
+
+/**
+ * @description 获取 PE 映像中指定节的信息。
+ * @param {const unsigned char*} image PE 映像数据。
+ * @param {size_t} image_size 映像数据大小。
+ * @param {uint16_t} section_index 节索引。
+ * @param {section_info_t*} out_info 输出节信息结构体。
+ * @return {bool} 如果成功获取节信息则返回 true，否则返回 false。
+ * @throws {无} 不抛出异常。
+ * @example
+ * section_info_t info = {};
+ * const bool success = get_payload_section_info(image_data, image_size, 0, &info);
+ */
+bool get_payload_section_info(const unsigned char* image, size_t image_size, uint16_t section_index, section_info_t* out_info)
+{
+    // 业务说明：解析 PE 文件结构，提取指定节的虚拟地址、大小和特性。
+    // 输入：image/image_size/section_index/out_info；输出：节信息；规则：验证 PE 格式和索引范围；异常：不抛出。
+    if (!image || !out_info || image_size < sizeof(image_dos_header_t)) {
+        return false;
+    }
+
+    const auto dos = reinterpret_cast<const image_dos_header_t*>(image);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        return false;
+    }
+
+    if (dos->e_lfanew <= 0 || static_cast<size_t>(dos->e_lfanew) + sizeof(image_nt_headers64_t) > image_size) {
+        return false;
+    }
+
+    const auto nt = reinterpret_cast<const image_nt_headers64_t*>(image + dos->e_lfanew);
+    if (nt->signature != IMAGE_NT_SIGNATURE) {
+        return false;
+    }
+
+    const uint64_t headers_base = reinterpret_cast<uint64_t>(&nt->optional_header);
+    const uint64_t sections_base = headers_base + nt->file_header.size_of_optional_header;
+    const uint64_t image_base = reinterpret_cast<uint64_t>(image);
+    const uint64_t sections_offset = sections_base - image_base;
+    const uint64_t sections_size = static_cast<uint64_t>(nt->file_header.number_of_sections) * sizeof(image_section_header_t);
+    if (sections_offset + sections_size > image_size) {
+        return false;
+    }
+
+    if (section_index >= nt->file_header.number_of_sections) {
+        return false;
+    }
+
+    const auto sections = reinterpret_cast<const image_section_header_t*>(sections_base);
+    const auto& section = sections[section_index];
+    out_info->virtual_address = section.virtual_address;
+    out_info->virtual_size = section.virtual_size;
+    out_info->raw_size = section.size_of_raw_data;
+    out_info->characteristics = section.characteristics;
+    return true;
+}
+
+/**
+ * @description 为有效载荷部署分配临时缓冲区。
+ * @param {context_t*} ctx 加载器上下文。
+ * @param {const uint32_t} size 需要分配的缓冲区大小。
+ * @param {allocation_info_t*} out_info 输出分配信息结构体。
+ * @return {bool} 如果成功分配缓冲区则返回 true，否则返回 false。
+ * @throws {无} 不抛出异常。
+ * @example
+ * allocation_info_t alloc = {};
+ * const bool success = allocate_payload_staging_buffer(ctx, 0x10000, &alloc);
+ */
+bool allocate_payload_staging_buffer(context_t* ctx, const uint32_t size, allocation_info_t* out_info)
+{
+    // 业务说明：为有效载荷部署分配连续的物理页面作为临时缓冲区。
+    // 输入：ctx/size/out_info；输出：分配信息；规则：按页对齐分配，确保连续性；异常：不抛出。
+    if (!out_info || !ctx) {
+        return false;
+    }
+
+    const uint32_t pages_needed = (size + 0xFFF) / 0x1000;
+
+    logs::print(ctx->log_ctx, "[Loader] Allocating %d pages (%d bytes) for staging...\n",
+        pages_needed, size);
+
+    void* vmm_base = heap_manager::allocate_page(ctx->heap_ctx);
+    if (!vmm_base) {
+        logs::print(ctx->log_ctx, "[Loader] Failed to allocate initial page\n");
+        return false;
+    }
+
+    for (uint32_t i = 1; i < pages_needed; i++) {
+        void* page = heap_manager::allocate_page(ctx->heap_ctx);
+        if (!page) {
+            logs::print(ctx->log_ctx, "[Loader] Failed to allocate page %d of %d\n", i + 1, pages_needed);
+            return false;
+        }
+        if (reinterpret_cast<uint8_t*>(page) !=
+            reinterpret_cast<uint8_t*>(vmm_base) + (i * 0x1000)) {
+            logs::print(ctx->log_ctx, "[Loader] ERROR: Non-contiguous allocation\n");
+            return false;
+        }
+    }
+
+    out_info->host_buffer = vmm_base;
+    out_info->size = size;
+    out_info->page_count = pages_needed;
+
+    return true;
+}
+
+/**
+ * @description 释放有效载荷部署的临时缓冲区。
+ * @param {context_t*} ctx 加载器上下文。
+ * @param {const allocation_info_t*} alloc 分配信息结构体。
+ * @return {void} 无返回值。
+ * @throws {无} 不抛出异常。
+ * @example
+ * free_payload_staging_buffer(ctx, &alloc_info);
+ */
+void free_payload_staging_buffer(context_t* ctx, const allocation_info_t* alloc)
+{
+    // 业务说明：释放之前分配的临时缓冲区页面。
+    // 输入：ctx/alloc；输出：无；规则：按页逐个释放；异常：不抛出。
+    if (!ctx || !alloc || !alloc->host_buffer || alloc->page_count == 0) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < alloc->page_count; i++) {
+        void* page = reinterpret_cast<uint8_t*>(alloc->host_buffer) + (static_cast<uint64_t>(i) * 0x1000);
+        heap_manager::free_page(ctx->heap_ctx, page);
+    }
+}
+
+/**
+ * @description 将 PE 映像的节映射到目标缓冲区。
+ * @param {void*} dest 目标缓冲区地址。
+ * @param {const unsigned char*} src 源 PE 映像数据。
+ * @param {const size_t} src_size 源映像数据大小。
+ * @return {bool} 如果成功映射所有节则返回 true，否则返回 false。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const bool success = map_sections(buffer, image_data, image_size);
+ */
+bool map_sections(void* dest, const unsigned char* src, const size_t src_size)
+{
+    // 业务说明：将 PE 文件的节数据复制到目标缓冲区，包括头部和所有节数据。
+    // 输入：dest/src/src_size；输出：映射结果；规则：复制头部，按节复制数据，填充虚拟大小；异常：不抛出。
+    const auto dos = reinterpret_cast<const image_dos_header_t*>(src);
+    const auto nt = reinterpret_cast<const image_nt_headers64_t*>(src + dos->e_lfanew);
+
+    const uint32_t headers_size = nt->optional_header.size_of_headers;
+    crt::copy_memory(dest, src, headers_size);
+
+    const auto sections = reinterpret_cast<const image_section_header_t*>(
+        reinterpret_cast<const uint8_t*>(&nt->optional_header) +
+        nt->file_header.size_of_optional_header
+    );
+
+    for (uint16_t i = 0; i < nt->file_header.number_of_sections; i++) {
+        const auto& section = sections[i];
+
+        if (section.size_of_raw_data == 0) {
+            continue;
+        }
+
+        if (section.pointer_to_raw_data + section.size_of_raw_data > src_size) {
+            return false;
+        }
+
+        void* dest_section = reinterpret_cast<uint8_t*>(dest) + section.virtual_address;
+        const void* src_section = src + section.pointer_to_raw_data;
+
+        crt::copy_memory(dest_section, src_section, section.size_of_raw_data);
+
+        if (section.virtual_size > section.size_of_raw_data) {
+            const uint32_t padding = section.virtual_size - section.size_of_raw_data;
+            crt::set_memory(
+                reinterpret_cast<uint8_t*>(dest_section) + section.size_of_raw_data,
+                0,
+                padding
+            );
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @description 根据 PE 节特性设置来宾内存页面的权限。
+ * @param {context_t*} ctx 加载器上下文。
+ * @param {uint64_t} target_va 目标虚拟地址（PE 映像基址）。
+ * @param {const unsigned char*} image PE 映像数据。
+ * @param {size_t} image_size 映像数据大小。
+ * @return {bool} 如果成功设置所有节权限则返回 true，否则返回 false。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const bool success = apply_section_permissions(ctx, base_address, image_data, image_size);
+ */
+bool apply_section_permissions(context_t* ctx, uint64_t target_va, const unsigned char* image, size_t image_size)
+{
+    // 业务说明：根据 PE 节的特性（读/写/执行）设置来宾内存页面的 EPT 权限。
+    // 输入：ctx/target_va/image/image_size；输出：权限设置结果；规则：按节解析特性并设置权限；异常：不抛出。
+    if (!ctx || !image) {
+        return false;
+    }
+
+    const auto dos = reinterpret_cast<const image_dos_header_t*>(image);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        return false;
+    }
+    if (dos->e_lfanew <= 0 || static_cast<size_t>(dos->e_lfanew) + sizeof(image_nt_headers64_t) > image_size) {
+        return false;
+    }
+    const auto nt = reinterpret_cast<const image_nt_headers64_t*>(image + dos->e_lfanew);
+    if (nt->signature != IMAGE_NT_SIGNATURE) {
+        return false;
+    }
+    const uint16_t section_count = nt->file_header.number_of_sections;
+
+    for (uint16_t i = 0; i < section_count; ++i) {
+        section_info_t info = {};
+        if (!get_payload_section_info(image, image_size, i, &info)) {
+            return false;
+        }
+
+        uint32_t section_size = info.virtual_size;
+        if (section_size == 0) {
+            section_size = info.raw_size;
+        }
+        if (section_size == 0) {
+            continue;
+        }
+
+        const uint64_t section_va = target_va + static_cast<uint64_t>(info.virtual_address);
+        const bool allow_read = (info.characteristics & 0x40000000u) != 0;
+        const bool allow_write = (info.characteristics & 0x80000000u) != 0;
+        const bool allow_execute = (info.characteristics & 0x20000000u) != 0;
+
+        logs::print(ctx->log_ctx, "[Injection] Stage 3: Section VA=0x%p Size=0x%X R=%d W=%d X=%d\n",
+            section_va, section_size, allow_read, allow_write, allow_execute);
+
+        if (!memory_manager::set_guest_page_permissions(ctx->guest_cr3, ctx->slat_cr3, section_va, 0, section_size, allow_read, allow_write, allow_execute)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @description 清除 PE 映像头部数据以增加隐蔽性。
+ * @param {context_t*} ctx 加载器上下文。
+ * @param {uint64_t} target_va 目标虚拟地址（PE 映像基址）。
+ * @param {const unsigned char*} image PE 映像数据。
+ * @param {size_t} image_size 映像数据大小。
+ * @return {bool} 如果成功清除头部数据则返回 true，否则返回 false。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const bool success = wipe_pe_headers(ctx, base_address, image_data, image_size);
+ */
+bool wipe_pe_headers(context_t* ctx, uint64_t target_va, const unsigned char* image, size_t image_size)
+{
+    // 业务说明：将 PE 映像头部数据清零，防止被检测工具识别。
+    // 输入：ctx/target_va/image/image_size；输出：清除结果；规则：先设置 RW 权限，清零数据，再设置 R 权限；异常：不抛出。
+    if (!ctx || !image) {
+        return false;
+    }
+
+    const auto dos = reinterpret_cast<const image_dos_header_t*>(image);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        return false;
+    }
+    if (dos->e_lfanew <= 0 || static_cast<size_t>(dos->e_lfanew) + sizeof(image_nt_headers64_t) > image_size) {
+        return false;
+    }
+    const auto nt = reinterpret_cast<const image_nt_headers64_t*>(image + dos->e_lfanew);
+    if (nt->signature != IMAGE_NT_SIGNATURE) {
+        return false;
+    }
+    const uint32_t headers_size = nt->optional_header.size_of_headers;
+    if (headers_size == 0 || headers_size > image_size) {
+        return false;
+    }
+
+    if (!memory_manager::set_guest_page_permissions(ctx->guest_cr3, ctx->slat_cr3, target_va, 0, headers_size, true, true, false)) {
+        return false;
+    }
+
+    uint8_t zero_page[0x100] = {};
+    uint32_t remaining = headers_size;
+    uint64_t current_va = target_va;
+    while (remaining > 0) {
+        const uint32_t chunk = remaining > sizeof(zero_page) ? static_cast<uint32_t>(sizeof(zero_page)) : remaining;
+        const uint64_t bytes_written = memory_manager::operate_on_guest_virtual_memory(
+            ctx->slat_cr3,
+            zero_page,
+            current_va,
+            ctx->guest_cr3,
+            chunk,
+            memory_operation_t::write_operation
+        );
+        if (bytes_written != chunk) {
+            return false;
+        }
+        current_va += chunk;
+        remaining -= chunk;
+    }
+
+    if (!memory_manager::set_guest_page_permissions(ctx->guest_cr3, ctx->slat_cr3, target_va, 0, headers_size, true, false, false)) {
+        return false;
+    }
+
+    return true;
+}
 
 // =============================================================================
 // Internal State

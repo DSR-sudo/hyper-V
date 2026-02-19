@@ -22,9 +22,6 @@ enum class deploy_result_t : uint32_t {
     entrypoint_execution_failed,
 };
 
-// Check if payloads are ready for deployment
-bool is_payload_ready();
-
 // =============================================================================
 // Dynamic Injection Helpers (Stage Machine Support)
 // =============================================================================

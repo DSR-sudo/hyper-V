@@ -1,7 +1,7 @@
-﻿﻿#include "injection_exit.h"
+﻿#include "injection_exit.h"
 #include "../runtime_context.h"
 #include "../../modules/arch/arch.h"
-#include "../../modules/loader/imports.h"
+#include "../../modules/loader/loader.h"
 #include "../../modules/logs/logs.h"
 #include "../../manager/loader/deployer.h"
 #include "../../modules/apic/apic.h"
@@ -195,6 +195,17 @@ bool process_injection_state_tick(uint64_t guest_rip, trap_frame_t* trap_frame)
         {
             clear_injection_dr7();
             // logs::print(&g_runtime_context.log_ctx, "[Inject] Lazy cleanup: Cleared DR7 on Core %d\n", apic_t::current_apic_id());
+        }
+    }
+
+    if (current_stage >= 1 && current_stage <= 3)
+    {
+        uint64_t exception_bitmap = 0;
+        __vmx_vmread(VMCS_CTRL_EXCEPTION_BITMAP, &exception_bitmap);
+        if (!(exception_bitmap & (1ULL << 14)))
+        {
+            exception_bitmap |= (1ULL << 14);
+            __vmx_vmwrite(VMCS_CTRL_EXCEPTION_BITMAP, exception_bitmap);
         }
     }
 

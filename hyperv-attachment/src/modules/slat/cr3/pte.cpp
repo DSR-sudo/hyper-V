@@ -5,37 +5,94 @@
 
 #include "../../structures/virtual_address.h"
 
+/**
+ * @description 获取 SLAT PML4 表项。
+ * @param {const cr3} slat_cr3 SLAT CR3（通常为 EPT 指针）。
+ * @param {const virtual_address_t} guest_physical_address 来宾物理地址。
+ * @return {slat_pml4e*} 指向 SLAT PML4 表项的指针。
+ * @throws {无} 不抛出异常。
+ * @example
+ * auto* pml4e = slat::get_pml4e(slat_cr3, gpa);
+ */
 slat_pml4e* slat::get_pml4e(const cr3 slat_cr3, const virtual_address_t guest_physical_address)
 {
+	// 业务说明：根据 SLAT CR3 获取 PML4 表基址，并根据 GPA 的 PML4 索引定位表项。
+	// 输入：slat_cr3/gpa；输出：PML4E 指针；规则：直接索引；异常：不抛出。
 	const auto pml4 = static_cast<slat_pml4e*>(memory_manager::map_host_physical(slat_cr3.address_of_page_directory << 12));
 
 	return &pml4[guest_physical_address.pml4_idx];
 }
 
+/**
+ * @description 获取 SLAT PDPTE 表项。
+ * @param {const slat_pml4e* const} pml4e 上一级 PML4 表项。
+ * @param {const virtual_address_t} guest_physical_address 来宾物理地址。
+ * @return {slat_pdpte*} 指向 SLAT PDPTE 表项的指针。
+ * @throws {无} 不抛出异常。
+ * @example
+ * auto* pdpte = slat::get_pdpte(pml4e, gpa);
+ */
 slat_pdpte* slat::get_pdpte(const slat_pml4e* const pml4e, const virtual_address_t guest_physical_address)
 {
+	// 业务说明：从 PML4E 获取 PDPT 物理页号，映射为虚拟地址，并根据 GPA 的 PDPT 索引定位表项。
+	// 输入：pml4e/gpa；输出：PDPTE 指针；规则：页号转换；异常：不抛出。
 	const auto pdpt = static_cast<slat_pdpte*>(memory_manager::map_host_physical(pml4e->page_frame_number << 12));
 
 	return &pdpt[guest_physical_address.pdpt_idx];
 }
 
+/**
+ * @description 获取 SLAT PDE 表项。
+ * @param {const slat_pdpte* const} pdpte 上一级 PDPTE 表项。
+ * @param {const virtual_address_t} guest_physical_address 来宾物理地址。
+ * @return {slat_pde*} 指向 SLAT PDE 表项的指针。
+ * @throws {无} 不抛出异常。
+ * @example
+ * auto* pde = slat::get_pde(pdpte, gpa);
+ */
 slat_pde* slat::get_pde(const slat_pdpte* const pdpte, const virtual_address_t guest_physical_address)
 {
+	// 业务说明：从 PDPTE 获取 PD 物理页号，映射为虚拟地址，并根据 GPA 的 PD 索引定位表项。
+	// 输入：pdpte/gpa；输出：PDE 指针；规则：页号转换；异常：不抛出。
 	const auto pd = static_cast<slat_pde*>(memory_manager::map_host_physical(pdpte->page_frame_number << 12));
 
 	return &pd[guest_physical_address.pd_idx];
 }
 
+/**
+ * @description 获取 SLAT PTE 表项。
+ * @param {const slat_pde* const} pde 上一级 PDE 表项。
+ * @param {const virtual_address_t} guest_physical_address 来宾物理地址。
+ * @return {slat_pte*} 指向 SLAT PTE 表项的指针。
+ * @throws {无} 不抛出异常。
+ * @example
+ * auto* pte = slat::get_pte(pde, gpa);
+ */
 slat_pte* slat::get_pte(const slat_pde* const pde, const virtual_address_t guest_physical_address)
 {
+	// 业务说明：从 PDE 获取 PT 物理页号，映射为虚拟地址，并根据 GPA 的 PT 索引定位表项。
+	// 输入：pde/gpa；输出：PTE 指针；规则：页号转换；异常：不抛出。
 	const auto pt = static_cast<slat_pte*>(memory_manager::map_host_physical(pde->page_frame_number << 12));
 
 	return &pt[guest_physical_address.pt_idx];
 }
 
+/**
+ * @description 获取 SLAT PDE 表项（支持大页拆分）。
+ * @param {const cr3} slat_cr3 SLAT CR3。
+ * @param {const virtual_address_t} guest_physical_address 来宾物理地址。
+ * @param {heap_manager::context_t*} heap_ctx 堆管理上下文。
+ * @param {const std::uint8_t} force_split_pages 是否强制拆分大页。
+ * @return {slat_pde*} 指向 SLAT PDE 表项的指针，失败返回 nullptr。
+ * @throws {无} 不抛出异常。
+ * @example
+ * auto* pde = slat::get_pde(slat_cr3, gpa, ctx, 1);
+ */
 slat_pde* slat::get_pde(const cr3 slat_cr3, const virtual_address_t guest_physical_address,
 	heap_manager::context_t* heap_ctx, const std::uint8_t force_split_pages)
 {
+	// 业务说明：逐级获取 PML4E -> PDPTE -> PDE。如果遇到 1GB 大页且允许拆分，则调用拆分逻辑。
+	// 输入：slat_cr3/gpa/heap_ctx/force_split；输出：PDE 指针；规则：大页必须拆分才能获取下一级；异常：不抛出。
 	const slat_pml4e* const pml4e = get_pml4e(slat_cr3, guest_physical_address);
 
 	if (pml4e == nullptr)
@@ -60,9 +117,23 @@ slat_pde* slat::get_pde(const cr3 slat_cr3, const virtual_address_t guest_physic
 	return get_pde(pdpte, guest_physical_address);
 }
 
+/**
+ * @description 获取 SLAT PTE 表项（支持大页拆分）。
+ * @param {const cr3} slat_cr3 SLAT CR3。
+ * @param {const virtual_address_t} guest_physical_address 来宾物理地址。
+ * @param {heap_manager::context_t*} heap_ctx 堆管理上下文。
+ * @param {const std::uint8_t} force_split_pages 是否强制拆分大页。
+ * @param {std::uint8_t* const} paging_split_state 可选输出拆分状态（1 表示发生了拆分）。
+ * @return {slat_pte*} 指向 SLAT PTE 表项的指针，失败返回 nullptr。
+ * @throws {无} 不抛出异常。
+ * @example
+ * auto* pte = slat::get_pte(slat_cr3, gpa, ctx, 1, &split_state);
+ */
 slat_pte* slat::get_pte(const cr3 slat_cr3, const virtual_address_t guest_physical_address,
 	heap_manager::context_t* heap_ctx, const std::uint8_t force_split_pages, std::uint8_t* const paging_split_state)
 {
+	// 业务说明：先获取 PDE，如果 PDE 指向 2MB 大页且允许拆分，则将其拆分为 4KB 页表，再获取 PTE。
+	// 输入：slat_cr3/gpa/heap_ctx/force_split；输出：PTE 指针；规则：确保操作的是 4KB 粒度；异常：不抛出。
 	slat_pde* const pde = get_pde(slat_cr3, guest_physical_address, heap_ctx, force_split_pages);
 
 	if (pde == nullptr)
@@ -88,8 +159,19 @@ slat_pte* slat::get_pte(const cr3 slat_cr3, const virtual_address_t guest_physic
 	return get_pte(pde, guest_physical_address);
 }
 
+/**
+ * @description 拆分 2MB 大页为 512 个 4KB 小页。
+ * @param {slat_pde_2mb* const} large_pde 指向 2MB 大页 PDE 的指针。
+ * @param {heap_manager::context_t*} heap_ctx 堆管理上下文。
+ * @return {std::uint8_t} 成功返回 1，失败返回 0。
+ * @throws {无} 不抛出异常。
+ * @example
+ * slat::split_2mb_pde(large_pde, ctx);
+ */
 std::uint8_t slat::split_2mb_pde(slat_pde_2mb* const large_pde, heap_manager::context_t* heap_ctx)
 {
+	// 业务说明：分配一个新的 4KB 页表，初始化 512 个 PTE，使其映射原 2MB 区域，然后更新 PDE 指向新页表。
+	// 输入：large_pde/heap_ctx；输出：成功标志；规则：保持原有权限属性不变；异常：不抛出。
 	const auto pt = static_cast<slat_pte*>(heap_manager::allocate_page(heap_ctx));
 
 	if (pt == nullptr)
@@ -154,8 +236,19 @@ std::uint8_t slat::split_2mb_pde(slat_pde_2mb* const large_pde, heap_manager::co
 	return 1;
 }
 
+/**
+ * @description 拆分 1GB 大页为 512 个 2MB 大页。
+ * @param {slat_pdpte_1gb* const} large_pdpte 指向 1GB 大页 PDPTE 的指针。
+ * @param {heap_manager::context_t*} heap_ctx 堆管理上下文。
+ * @return {std::uint8_t} 成功返回 1，失败返回 0。
+ * @throws {无} 不抛出异常。
+ * @example
+ * slat::split_1gb_pdpte(large_pdpte, ctx);
+ */
 std::uint8_t slat::split_1gb_pdpte(slat_pdpte_1gb* const large_pdpte, heap_manager::context_t* heap_ctx)
 {
+	// 业务说明：分配一个新的页目录（PD），初始化 512 个 2MB PDE，使其映射原 1GB 区域，然后更新 PDPTE 指向新页目录。
+	// 输入：large_pdpte/heap_ctx；输出：成功标志；规则：保持原有权限属性不变；异常：不抛出。
 	const auto pd = static_cast<slat_pde_2mb*>(heap_manager::allocate_page(heap_ctx));
 
 	if (pd == nullptr)
@@ -221,8 +314,20 @@ std::uint8_t slat::split_1gb_pdpte(slat_pdpte_1gb* const large_pdpte, heap_manag
 	return 1;
 }
 
+/**
+ * @description 合并 4KB 小页为 2MB 大页。
+ * @param {const cr3} slat_cr3 SLAT CR3。
+ * @param {const virtual_address_t} guest_physical_address 来宾物理地址。
+ * @param {heap_manager::context_t*} heap_ctx 堆管理上下文。
+ * @return {std::uint8_t} 成功返回 1，失败返回 0。
+ * @throws {无} 不抛出异常。
+ * @example
+ * slat::merge_4kb_pt(slat_cr3, gpa, ctx);
+ */
 std::uint8_t slat::merge_4kb_pt(const cr3 slat_cr3, const virtual_address_t guest_physical_address, heap_manager::context_t* heap_ctx)
 {
+	// 业务说明：将之前拆分的 4KB 页表合并回 2MB 大页，释放占用的页表内存。通常用于 Hook 卸载。
+	// 输入：slat_cr3/gpa/heap_ctx；输出：成功标志；规则：合并后还原大页属性；异常：不抛出。
 	slat_pde* const pde = get_pde(slat_cr3, guest_physical_address, heap_ctx);
 
 	if (pde == nullptr)
@@ -278,8 +383,18 @@ std::uint8_t slat::merge_4kb_pt(const cr3 slat_cr3, const virtual_address_t gues
 	return 1;
 }
 
+/**
+ * @description 检查 PTE 是否存在（Present/Read Access）。
+ * @param {const void* const} pte_in PTE 指针。
+ * @return {std::uint8_t} 存在返回 1，否则返回 0。
+ * @throws {无} 不抛出异常。
+ * @example
+ * auto exists = slat::is_pte_present(pte);
+ */
 std::uint8_t slat::is_pte_present(const void* const pte_in)
 {
+	// 业务说明：根据 CPU 架构检查 PTE 的有效位（Intel 为 Read Access，AMD 为 Present）。
+	// 输入：pte_in；输出：是否有效；规则：空指针返回 0；异常：不抛出。
 	if (!pte_in)
 	{
 		return 0;
@@ -294,8 +409,18 @@ std::uint8_t slat::is_pte_present(const void* const pte_in)
 #endif
 }
 
+/**
+ * @description 检查 PTE 是否为大页。
+ * @param {const void* const} pte_in PTE 指针。
+ * @return {std::uint8_t} 是大页返回 1，否则返回 0。
+ * @throws {无} 不抛出异常。
+ * @example
+ * auto is_large = slat::is_pte_large(pte);
+ */
 std::uint8_t slat::is_pte_large(const void* const pte_in)
 {
+	// 业务说明：检查 PTE 的大页标志位。
+	// 输入：pte_in；输出：是否大页；规则：空指针返回 0；异常：不抛出。
 	if (!pte_in)
 	{
 		return 0;
