@@ -1,4 +1,4 @@
-﻿#include "injection_exit.h"
+﻿﻿#include "injection_exit.h"
 #include "../runtime_context.h"
 #include "../../modules/arch/arch.h"
 #include "../../modules/loader/imports.h"
@@ -179,6 +179,22 @@ bool process_injection_state_tick(uint64_t guest_rip, trap_frame_t* trap_frame)
         if (interrupts::is_nmi_ready(&g_runtime_context.interrupts_ctx, apic_t::current_apic_id()))
         {
             interrupts::clear_nmi_ready(&g_runtime_context.interrupts_ctx, apic_t::current_apic_id());
+        }
+    }
+
+    // 2. Cleanup Phase (Runs on ALL cores)
+    // Once injection is progressing (Stage > 1), ensure all cores strip their debug hooks.
+    // This handles cores that were configured but didn't trigger the specific NtOpenFile trap.
+    if (current_stage > 1)
+    {
+        uint64_t guest_dr7 = 0;
+        __vmx_vmread(VMCS_GUEST_DR7, &guest_dr7);
+
+        // If L0 (Bit 0) is set, we are still dirty. Clean it up.
+        if (guest_dr7 & 1)
+        {
+            clear_injection_dr7();
+            // logs::print(&g_runtime_context.log_ctx, "[Inject] Lazy cleanup: Cleared DR7 on Core %d\n", apic_t::current_apic_id());
         }
     }
 
