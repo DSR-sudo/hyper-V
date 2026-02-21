@@ -2,6 +2,8 @@
 
 #include "../../memory_manager/memory_manager.h"
 #include "../../memory_manager/heap_manager.h"
+#include "../../logs/logs.h"
+#include "../../../runtime/runtime_context.h"
 
 #include "../../structures/virtual_address.h"
 
@@ -147,6 +149,7 @@ slat_pte* slat::get_pte(const cr3 slat_cr3, const virtual_address_t guest_physic
 	{
 		if (force_split_pages == 0 || split_2mb_pde(large_pde, heap_ctx) == 0)
 		{
+			logs::print(&g_runtime_context.log_ctx, "[SLAT] Split2M failed GPA=0x%p\n", guest_physical_address.address);
 			return nullptr;
 		}
 

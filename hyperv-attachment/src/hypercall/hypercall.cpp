@@ -1,4 +1,4 @@
-#include "hypercall.h"
+﻿#include "hypercall.h"
 #include "../modules/memory_manager/memory_manager.h"
 #include "../modules/memory_manager/heap_manager.h"
 #include "../runtime/runtime_context.h"
@@ -377,13 +377,21 @@ void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* con
         // 输入：目标虚拟地址（rdx）/目标 CR3（r8）；输出：是否成功；规则：分配影子页，拷贝并修改指定偏移（+4）处的字节（0x48->0x3c）；异常：不抛出。
         const virtual_address_t target_virtual_address = { .address = trap_frame->rdx };
         const cr3 target_cr3 = { .flags = trap_frame->r8 };
+        const cr3 current_guest_cr3 = arch::get_guest_cr3();
         const cr3 slat_cr3 = slat::hyperv_cr3(&g_runtime_context.slat_ctx);
 
+        logs::print(&g_runtime_context.log_ctx, "[SLAT] add_slat_patch_hook ReqVA=0x%p ReqCR3=0x%p CurrCR3=0x%p\n",
+            target_virtual_address.address, target_cr3.flags, current_guest_cr3.flags);
+
         std::uint64_t size_left = 0;
+
         const std::uint64_t target_guest_physical_address = memory_manager::translate_guest_virtual_address(target_cr3, slat_cr3, target_virtual_address, &size_left);
+
+        const std::uint64_t gpa_page_base = target_guest_physical_address & ~0xFFFULL;
 
         if (target_guest_physical_address == 0)
         {
+            logs::print(&g_runtime_context.log_ctx, "[SLAT] add_slat_patch_hook translate failed\n");
             trap_frame->rax = 0;
             break;
         }
@@ -396,8 +404,11 @@ void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* con
             break;
         }
 
+        // FIX: Must align to page boundary for map_guest_physical because it adds offset to base.
+        // If we pass full GPA, map_guest_physical returns (PageBase + Offset).
+        // If we then index with offset again (target_bytes[offset]), we access (PageBase + Offset + Offset).
         void* const shadow_page_host_virtual = memory_manager::map_host_physical(shadow_page_host_physical_address);
-        void* const target_page_host_virtual = memory_manager::map_guest_physical(slat_cr3, target_guest_physical_address);
+        void* const target_page_host_virtual = memory_manager::map_guest_physical(slat_cr3, gpa_page_base);
 
         if (target_page_host_virtual == nullptr)
         {
@@ -408,24 +419,73 @@ void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* con
 
         crt::copy_memory(shadow_page_host_virtual, target_page_host_virtual, 0x1000);
 
-        const std::uint64_t page_offset = target_virtual_address.offset;
+        std::uint8_t* const target_bytes = static_cast<std::uint8_t*>(target_page_host_virtual);
+        std::uint8_t* const shadow_bytes = static_cast<std::uint8_t*>(shadow_page_host_virtual);
 
-        if (page_offset + 4 >= 0x1000)
+        const std::uint8_t expected_patch_bytes[5] = { 0xF3, 0x0F, 0x10, 0x40, 0x48 };
+        std::uint64_t patch_base_offset = target_virtual_address.offset;
+        std::uint8_t found = 0;
+
+        // Strict check: Pattern must exist at the requested offset
+        if (target_virtual_address.offset + 5 <= 0x1000 &&
+            target_bytes[target_virtual_address.offset + 0] == expected_patch_bytes[0] &&
+            target_bytes[target_virtual_address.offset + 1] == expected_patch_bytes[1] &&
+            target_bytes[target_virtual_address.offset + 2] == expected_patch_bytes[2] &&
+            target_bytes[target_virtual_address.offset + 3] == expected_patch_bytes[3] &&
+            target_bytes[target_virtual_address.offset + 4] == expected_patch_bytes[4])
         {
+            found = 1;
+        }
+        else
+        {
+            // Diagnostic: Search the whole page to give a hint
+            for (std::uint64_t i = 0; i + 5 <= 0x1000; i++)
+            {
+                if (target_bytes[i + 0] == expected_patch_bytes[0] &&
+                    target_bytes[i + 1] == expected_patch_bytes[1] &&
+                    target_bytes[i + 2] == expected_patch_bytes[2] &&
+                    target_bytes[i + 3] == expected_patch_bytes[3] &&
+                    target_bytes[i + 4] == expected_patch_bytes[4])
+                {
+                    logs::print(&g_runtime_context.log_ctx, "[SLAT] WARN: Pattern found at OFF=0x%p. Auto-fixing offset (Requested OFF=0x%p).\n", i, target_virtual_address.offset);
+                    patch_base_offset = i;
+                    found = 1;
+                    break;
+                }
+            }
+        }
+
+        if (found == 0)
+        {
+            logs::print(&g_runtime_context.log_ctx, "[SLAT] patch pattern F3 0F 10 40 48 not found at requested offset.\n");
+            
+            // Check for MOVAPS (0F 28) - common issue if offset is wrong
+            if (target_bytes[target_virtual_address.offset] == 0x0F && target_bytes[target_virtual_address.offset + 1] == 0x28)
+            {
+                logs::print(&g_runtime_context.log_ctx, "[SLAT] ERROR: Found MOVAPS (0F 28) at offset. This means you are pointing to stack save area (prologue) instead of instruction.\n");
+            }
+
             heap_manager::free_page(&g_runtime_context.heap_ctx, shadow_page_host_virtual);
             trap_frame->rax = 0;
             break;
         }
 
-        std::uint8_t* const patch_address = static_cast<std::uint8_t*>(shadow_page_host_virtual) + page_offset + 4;
-        if (*patch_address != 0x48)
+        const std::uint64_t patch_offset = patch_base_offset + 4;
+        if (patch_offset >= 0x1000 || patch_base_offset + 8 > 0x1000)
         {
-            heap_manager::free_page(&g_runtime_context.heap_ctx, shadow_page_host_virtual);
-            trap_frame->rax = 0;
-            break;
+             logs::print(&g_runtime_context.log_ctx, "[SLAT] add_slat_patch_hook invalid patch offset OFF=0x%p\n", patch_offset);
+             heap_manager::free_page(&g_runtime_context.heap_ctx, shadow_page_host_virtual);
+             trap_frame->rax = 0;
+             break;
         }
 
-        *patch_address = 0x3c;
+        const std::uint64_t patch_va = (target_virtual_address.address - target_virtual_address.offset) + patch_base_offset;
+
+        logs::print(&g_runtime_context.log_ctx, "[SLAT] patch match VA=0x%p OFF=0x%p\n", patch_va, patch_base_offset);
+
+        const std::uint8_t old_patch = shadow_bytes[patch_offset];
+        shadow_bytes[patch_offset] = 0x3c;
+        logs::print(&g_runtime_context.log_ctx, "[SLAT] patch byte OFF=0x%p %02x->%02x\n", patch_offset, old_patch, shadow_bytes[patch_offset]);
 
         trap_frame->rax = slat::hook::add_by_host_physical(&g_runtime_context.slat_ctx, { .address = target_guest_physical_address }, shadow_page_host_physical_address);
         if (trap_frame->rax == 0)

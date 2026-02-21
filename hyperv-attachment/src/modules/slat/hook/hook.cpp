@@ -7,6 +7,8 @@
 #include "../slat.h"
 
 #include "../../memory_manager/heap_manager.h"
+#include "../../logs/logs.h"
+#include "../../../runtime/runtime_context.h"
 
 #include "../../structures/virtual_address.h"
 #include "../../crt/crt.h"
@@ -170,6 +172,7 @@ std::uint64_t slat::hook::add(slat::context_t* ctx, const virtual_address_t targ
 	target_pte->read_access = 0;
 	target_pte->write_access = 0;
 
+	hook_target_pte->page_frame_number = hook_entry->original_pfn();
 	hook_target_pte->execute_access = 0;
 	hook_target_pte->read_access = 1;
 	hook_target_pte->write_access = 1;
@@ -351,6 +354,7 @@ std::uint64_t slat::hook::add_by_host_physical(slat::context_t* ctx, const virtu
 	target_pte->read_access = 0;
 	target_pte->write_access = 0;
 
+	hook_target_pte->page_frame_number = hook_entry->original_pfn();
 	hook_target_pte->execute_access = 0;
 	hook_target_pte->read_access = 1;
 	hook_target_pte->write_access = 1;
@@ -430,6 +434,7 @@ std::uint8_t clean_up_hook_ptes(slat::context_t* ctx, const virtual_address_t ta
 	target_pte->write_access = hook_entry->original_write_access();
 	target_pte->execute_access = hook_entry->original_execute_access();
 
+	hook_target_pte->page_frame_number = hook_entry->original_pfn();
 	hook_target_pte->read_access = hook_entry->original_read_access();
 	hook_target_pte->write_access = hook_entry->original_write_access();
 	hook_target_pte->execute_access = hook_entry->original_execute_access();

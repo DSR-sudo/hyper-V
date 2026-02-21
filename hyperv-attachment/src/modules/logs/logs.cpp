@@ -107,6 +107,18 @@ void logs::print(context_t* ctx, const char* format, ...)
 					ctx->text_log_buffer[ctx->text_log_index++] = *s++;
 				}
 			}
+			else if (*format == '0' && *(format + 1) == '2' && *(format + 2) == 'x')
+			{
+				std::uint64_t val = va_arg(variadic_args, std::uint64_t);
+				const std::uint8_t byte_val = static_cast<std::uint8_t>(val & 0xFF);
+				const char hi = "0123456789ABCDEF"[(byte_val >> 4) & 0xF];
+				const char lo = "0123456789ABCDEF"[byte_val & 0xF];
+				if (ctx->text_log_index < sizeof(ctx->text_log_buffer) - 1)
+					ctx->text_log_buffer[ctx->text_log_index++] = hi;
+				if (ctx->text_log_index < sizeof(ctx->text_log_buffer) - 1)
+					ctx->text_log_buffer[ctx->text_log_index++] = lo;
+				format += 2;
+			}
 			else if (*format == 'x' || *format == 'p')
 			{
 				std::uint64_t val = va_arg(variadic_args, std::uint64_t);
