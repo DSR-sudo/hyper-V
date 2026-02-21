@@ -62,6 +62,28 @@ std::uint64_t crt::string_length(const char* string)
 	return length;
 }
 
+/**
+ * @description 比较两个字符串是否相等。
+ * @param {const char*} s1 第一个字符串。
+ * @param {const char*} s2 第二个字符串。
+ * @return {bool} 如果相等返回 true，否则返回 false。
+ * @throws {无} 不抛出异常。
+ * @example
+ * if (crt::string_compare("test", "test")) { ... }
+ */
+bool crt::string_compare(const char* s1, const char* s2)
+{
+	// 业务说明：逐字符比较两个字符串。
+	// 输入：s1/s2；输出：是否相等；规则：区分大小写，完全匹配；异常：不抛出。
+	if (!s1 || !s2) return s1 == s2;
+	
+	while (*s1 && (*s1 == *s2)) {
+		s1++;
+		s2++;
+	}
+	return (*s1 == *s2);
+}
+
 // Forward declarations with C linkage
 extern "C" void* __cdecl memset(void*, int, unsigned __int64);
 extern "C" void* __cdecl memcpy(void*, const void*, unsigned __int64);

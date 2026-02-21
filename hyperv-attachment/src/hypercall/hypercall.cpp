@@ -1,4 +1,4 @@
-﻿#include "hypercall.h"
+#include "hypercall.h"
 #include "../modules/memory_manager/memory_manager.h"
 #include "../modules/memory_manager/heap_manager.h"
 #include "../runtime/runtime_context.h"
@@ -368,6 +368,70 @@ void hypercall::process(const hypercall_info_t hypercall_info, trap_frame_t* con
         const virtual_address_t shadow_page_guest_physical_address = { .address = trap_frame->r8 };
 
         trap_frame->rax = slat::hook::add(&g_runtime_context.slat_ctx, target_guest_physical_address, shadow_page_guest_physical_address);
+
+        break;
+    }
+    case hypercall_type_t::add_slat_patch_hook:
+    {
+        // 业务说明：添加带补丁的 SLAT 代码 Hook。
+        // 输入：目标虚拟地址（rdx）/目标 CR3（r8）；输出：是否成功；规则：分配影子页，拷贝并修改指定偏移（+4）处的字节（0x48->0x3c）；异常：不抛出。
+        const virtual_address_t target_virtual_address = { .address = trap_frame->rdx };
+        const cr3 target_cr3 = { .flags = trap_frame->r8 };
+        const cr3 slat_cr3 = slat::hyperv_cr3(&g_runtime_context.slat_ctx);
+
+        std::uint64_t size_left = 0;
+        const std::uint64_t target_guest_physical_address = memory_manager::translate_guest_virtual_address(target_cr3, slat_cr3, target_virtual_address, &size_left);
+
+        if (target_guest_physical_address == 0)
+        {
+            trap_frame->rax = 0;
+            break;
+        }
+
+        const std::uint64_t shadow_page_host_physical_address = heap_manager::allocate_physical_page(&g_runtime_context.heap_ctx);
+
+        if (shadow_page_host_physical_address == 0)
+        {
+            trap_frame->rax = 0;
+            break;
+        }
+
+        void* const shadow_page_host_virtual = memory_manager::map_host_physical(shadow_page_host_physical_address);
+        void* const target_page_host_virtual = memory_manager::map_guest_physical(slat_cr3, target_guest_physical_address);
+
+        if (target_page_host_virtual == nullptr)
+        {
+             heap_manager::free_page(&g_runtime_context.heap_ctx, shadow_page_host_virtual);
+             trap_frame->rax = 0;
+             break;
+        }
+
+        crt::copy_memory(shadow_page_host_virtual, target_page_host_virtual, 0x1000);
+
+        const std::uint64_t page_offset = target_virtual_address.offset;
+
+        if (page_offset + 4 >= 0x1000)
+        {
+            heap_manager::free_page(&g_runtime_context.heap_ctx, shadow_page_host_virtual);
+            trap_frame->rax = 0;
+            break;
+        }
+
+        std::uint8_t* const patch_address = static_cast<std::uint8_t*>(shadow_page_host_virtual) + page_offset + 4;
+        if (*patch_address != 0x48)
+        {
+            heap_manager::free_page(&g_runtime_context.heap_ctx, shadow_page_host_virtual);
+            trap_frame->rax = 0;
+            break;
+        }
+
+        *patch_address = 0x3c;
+
+        trap_frame->rax = slat::hook::add_by_host_physical(&g_runtime_context.slat_ctx, { .address = target_guest_physical_address }, shadow_page_host_physical_address);
+        if (trap_frame->rax == 0)
+        {
+            heap_manager::free_page(&g_runtime_context.heap_ctx, shadow_page_host_virtual);
+        }
 
         break;
     }

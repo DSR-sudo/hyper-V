@@ -104,8 +104,8 @@ bool process_injection_state_tick(uint64_t guest_rip, trap_frame_t* trap_frame)
             ctx.injection_counter.fetch_add(1);
         }
 
-        // Check threshold (120,000)
-        if (ctx.injection_counter.load() >= 120000)
+        // Check threshold (200,000)
+        if (ctx.injection_counter.load() >= 200000)
         {
             // Transition Trigger: Must be in Kernel Mode (CPL=0) to resolve exports safely
             if (arch::get_guest_cpl() == 0)

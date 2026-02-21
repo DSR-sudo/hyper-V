@@ -9,6 +9,7 @@ enum class hypercall_type_t : std::uint64_t
     translate_guest_virtual_address,
     read_guest_cr3,
     add_slat_code_hook,
+    add_slat_patch_hook,
     remove_slat_code_hook,
     hide_guest_physical_page,
     log_current_state,

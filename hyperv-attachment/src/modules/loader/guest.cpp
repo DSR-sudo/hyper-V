@@ -1,4 +1,4 @@
-﻿﻿// =============================================================================
+﻿// =============================================================================
 // VMM Shadow Mapper - Guest Kernel Discovery
 // Provides utilities for locating kernel modules in Guest address space
 // =============================================================================
@@ -117,6 +117,10 @@ bool get_payload_section_info(const unsigned char* image, size_t image_size, uin
 
     const auto sections = reinterpret_cast<const image_section_header_t*>(sections_base);
     const auto& section = sections[section_index];
+    
+    crt::copy_memory(out_info->name, section.name, 8);
+    out_info->name[8] = '\0';
+    
     out_info->virtual_address = section.virtual_address;
     out_info->virtual_size = section.virtual_size;
     out_info->raw_size = section.size_of_raw_data;

@@ -2,93 +2,106 @@ Hyper-V Project Detailed Architecture Map
 ========================================
 
 .
+├── .gitattributes
+├── .gitignore
+├── .gitmodules
 ├── .trae/
 │   └── rules/
+│       ├── analy.md
 │       └── hyper.md                    # 项目编码规范与模块化设计准则 (以 main 为核心的架构)
+├── LICENSE
+├── README.md
+├── _internal_build.cmd                 # 自动化构建脚本
+├── convert_encoding.ps1
+├── hyper-reV.sln                       # 项目解决方案
 ├── hyperv-attachment/                  # 核心 hypervisor 逻辑 (遵循模块化解耦原则)
-│   ├── src/
-│   │   ├── manager/                    # 业务管理层 (负责逻辑编排与状态协调)
-│   │   │   └── loader/                 # 业务逻辑: Payload 部署与加载管理
-│   │   │       ├── deployer.cpp        # Payload 部署协调器实现 (业务层)
-│   │   │       └── deployer.h          # 部署接口: loader::deploy_rwbase_payload
-│   │   ├── modules/                    # 工具模块 (必须无状态设计)
-│   │   │   ├── apic/                   # APIC (中断控制器) 处理
-│   │   │   │   ├── apic.cpp            # APIC 基类与 xAPIC/x2APIC 实现
-│   │   │   │   ├── apic.h              # 接口: apic_t (send_ipi, send_nmi, create_instance)
-│   │   │   │   ├── apic_def.h          # APIC 相关寄存器与位域结构定义
-│   │   │   │   └── apic_intrin.h       # APIC 相关的编译器内联函数封装
-│   │   │   ├── arch/                   # 硬件架构抽象层
-│   │   │   │   ├── arch.cpp            # 架构相关功能的通用入口实现
-│   │   │   │   ├── arch.h              # 接口: arch::get_vmexit_reason
-│   │   │   │   └── amd_def.h           # AMD VMCB 与相关标志位定义
-│   │   │   ├── crt/                    # 自定义 C 运行时 (无外部依赖)
-│   │   │   │   ├── crt.cpp             # 内存操作 (copy, set) 与同步原语实现
-│   │   │   │   └── crt.h               # 接口: crt::copy_memory, crt::mutex_t, crt::bitmap_t
-│   │   │   ├── interrupts/             # 中断与 NMI 处理
-│   │   │   │   ├── interrupts.cpp      # 中断向量表与处理逻辑
-│   │   │   │   ├── interrupts.h        # 接口: interrupts::set_up, interrupts::process_nmi
-│   │   │   │   └── interrupt_entry.asm # 汇编级中断入口点
-│   │   │   ├── loader/                 # 工具模块: 影子映射器与 Payload 加载工具
-│   │   │   │   ├── cookie.cpp          # Security Cookie 修复实现
-│   │   │   │   ├── cookie.h            # Cookie 修复接口
-│   │   │   │   ├── guest.cpp           # Guest 内核模块发现逻辑
-│   │   │   │   ├── guest.h             # 接口: loader::init_guest_discovery
-│   │   │   │   ├── imports.cpp         # 内核导出函数解析实现
-│   │   │   │   ├── imports.h           # 导出解析接口
-│   │   │   │   ├── pe.h                # PE 文件结构定义 (移植自 kdmapper)
-│   │   │   │   ├── reloc.cpp           # 重定位应用实现
-│   │   │   │   ├── reloc.h             # 重定位接口
-│   │   │   │   └── loader.h            # 统一加载器工具头文件
-│   │   │   ├── logs/                   # 日志系统
-│   │   │   │   ├── logs.cpp            # 日志缓冲与 Guest 同步实现
-│   │   │   │   └── logs.h              # 接口: logs::add_log, logs::print
-│   │   │   ├── memory_manager/         # 内存管理模块
-│   │   │   │   ├── heap_manager.cpp    # 堆内存分配器实现
-│   │   │   │   ├── heap_manager.h      # 堆管理接口
-│   │   │   │   ├── memory_manager.cpp  # 物理/虚拟地址转换与映射实现
-│   │   │   │   └── memory_manager.h    # 接口: memory_manager::map_guest_physical
-│   │   │   └── slat/                   # 第二级地址转换 (EPT/NPT)
-│   │   │       ├── cr3/                # 页表操作与管理
-│   │   │       │   ├── cr3.cpp         # 页表基址与缓存管理
-│   │   │       │   ├── cr3.h           # 接口: slat::cr3::get_pml4_address
-│   │   │       │   ├── deep_copy.cpp   # 页表深拷贝实现 (用于双侧 SLAT 同步)
-│   │   │       │   ├── deep_copy.h      # 深拷贝接口
-│   │   │       │   ├── intel_invept.asm # Intel INVEPT 指令封装
-│   │   │       │   ├── pte.cpp         # 页表项 (PTE) 修改逻辑
-│   │   │       │   └── pte.h           # PTE 操作接口
-│   │   │       ├── hook/               # SLAT 钩子机制
-│   │   │       │   ├── hook.cpp        # 钩子安装与管理核心
-│   │   │       │   ├── hook.h          # 接口: slat::hook::install
-│   │   │       │   ├── hook_entry.cpp  # 钩子入口管理实现
-│   │   │       │   └── hook_entry.h    # 钩子入口接口
-│   │   │       ├── violation/          # SLAT 违例处理
-│   │   │       │   ├── violation.cpp   # 违例处理主逻辑
-│   │   │       │   └── violation.h     # 接口: slat::violation::handler
-│   │   │       ├── slat.cpp            # SLAT 初始化与核心翻译逻辑
-│   │   │       ├── slat.h              # 接口: slat::set_up, slat::hide_physical_page
-│   │   │       └── slat_def.h          # SLAT 相关结构与常量定义
-│   │   ├── runtime/                    # 运行时分发与核心逻辑调度 (持有状态)
-│   │   │   ├── dispatch/               # VMExit 具体分发处理逻辑
-│   │   │   │   ├── hypercall_exit.cpp  # Hypercall 处理
-│   │   │   │   ├── hypercall_exit.h
-│   │   │   │   ├── injection_exit.cpp  # 注入状态机与劫持逻辑
-│   │   │   │   ├── injection_exit.h
-│   │   │   │   ├── initialization_exit.cpp # 首次运行初始化与清理
-│   │   │   │   └── initialization_exit.h
-│   │   │   ├── payload_validation.cpp  # Payload 合法性校验实现
-│   │   │   ├── payload_validation.h    # 校验接口
-│   │   │   ├── runtime_context.cpp     # 全局运行上下文定义 (中央状态库)
-│   │   │   ├── runtime_context.h       # 接口: g_runtime_context
-│   │   │   ├── vmexit_dispatch.cpp     # VMExit 事件核心分发路由
-│   │   │   └── vmexit_dispatch.h       # 分发器接口
-│   │   ├── hypercall/                  # Hypercall 处理 (业务层)
-│   │   │   ├── hypercall.cpp           # Hypercall 逻辑处理实现
-│   │   │   └── hypercall.h             # 接口: hypercall::process
-│   │   ├── structures/                 # 核心数据结构定义
-│   │   │   └── virtual_address.h       # 虚拟地址分解结构
-│   │   ├── arch_config.h               # 静态架构配置开关
-│   │   └── main.cpp                    # 模块入口，负责所有子系统的初始化调度
-│   └── ext/                            # 外部参考文档 (ia32-doc 等)
+│   ├── ext/                            # 外部参考文档 (ia32-doc 等)
+│   │   └── ia32-doc/
+│   │       └── ia32.hpp
+│   └── src/
+│       ├── arch_config.h               # 静态架构配置开关
+│       ├── main.cpp                    # 模块入口，负责所有子系统的初始化调度
+│       ├── hypercall/                  # Hypercall 处理 (业务层)
+│       │   ├── hypercall.cpp           # Hypercall 逻辑处理实现
+│       │   └── hypercall.h             # 接口: hypercall::process
+│       ├── manager/                    # 业务管理层 (负责逻辑编排与状态协调)
+│       │   └── loader/                 # 业务逻辑: Payload 部署与加载管理
+│       │       ├── deployer.cpp        # Payload 部署协调器实现 (业务层)
+│       │       ├── deployer.cpp.txt
+│       │       └── deployer.h          # 部署接口: loader::deploy_rwbase_payload
+│       ├── modules/                    # 工具模块 (必须无状态设计)
+│       │   ├── apic/                   # APIC (中断控制器) 处理
+│       │   │   ├── apic.cpp            # APIC 基类与 xAPIC/x2APIC 实现
+│       │   │   ├── apic.h              # 接口: apic_t (send_ipi, send_nmi, create_instance)
+│       │   │   ├── apic_def.h          # APIC 相关寄存器与位域结构定义
+│       │   │   └── apic_intrin.h       # APIC 相关的编译器内联函数封装
+│       │   ├── arch/                   # 硬件架构抽象层
+│       │   │   ├── arch.cpp            # 架构相关功能的通用入口实现
+│       │   │   ├── arch.h              # 接口: arch::get_vmexit_reason
+│       │   │   └── amd_def.h           # AMD VMCB 与相关标志位定义
+│       │   ├── crt/                    # 自定义 C 运行时 (无外部依赖)
+│       │   │   ├── crt.cpp             # 内存操作 (copy, set) 与同步原语实现
+│       │   │   └── crt.h               # 接口: crt::copy_memory, crt::mutex_t, crt::bitmap_t
+│       │   ├── interrupts/             # 中断与 NMI 处理
+│       │   │   ├── interrupts.cpp      # 中断向量表与处理逻辑
+│       │   │   ├── interrupts.h        # 接口: interrupts::set_up, interrupts::process_nmi
+│       │   │   └── interrupt_entry.asm # 汇编级中断入口点
+│       │   ├── loader/                 # 工具模块: 影子映射器与 Payload 加载工具
+│       │   │   ├── cookie.cpp          # Security Cookie 修复实现
+│       │   │   ├── cookie.h            # Cookie 修复接口
+│       │   │   ├── guest.cpp           # Guest 内核模块发现逻辑
+│       │   │   ├── guest.h             # 接口: loader::init_guest_discovery
+│       │   │   ├── imports.cpp         # 内核导出函数解析实现
+│       │   │   ├── imports.h           # 导出解析接口
+│       │   │   ├── pe.h                # PE 文件结构定义 (移植自 kdmapper)
+│       │   │   ├── reloc.cpp           # 重定位应用实现
+│       │   │   ├── reloc.h             # 重定位接口
+│       │   │   └── loader.h            # 统一加载器工具头文件
+│       │   ├── logs/                   # 日志系统
+│       │   │   ├── logs.cpp            # 日志缓冲与 Guest 同步实现
+│       │   │   └── logs.h              # 接口: logs::add_log, logs::print
+│       │   ├── memory_manager/         # 内存管理模块
+│       │   │   ├── heap_manager.cpp    # 堆内存分配器实现
+│       │   │   ├── heap_manager.h      # 堆管理接口
+│       │   │   ├── memory_manager.cpp  # 物理/虚拟地址转换与映射实现
+│       │   │   └── memory_manager.h    # 接口: memory_manager::map_guest_physical
+│       │   ├── slat/                   # 第二级地址转换 (EPT/NPT)
+│       │   │   ├── cr3/                # 页表操作与管理
+│       │   │   │   ├── cr3.cpp         # 页表基址与缓存管理
+│       │   │   │   ├── cr3.h           # 接口: slat::cr3::get_pml4_address
+│       │   │   │   ├── deep_copy.cpp   # 页表深拷贝实现 (用于双侧 SLAT 同步)
+│       │   │   │   ├── deep_copy.h      # 深拷贝接口
+│       │   │   │   ├── intel_invept.asm # Intel INVEPT 指令封装
+│       │   │   │   ├── pte.cpp         # 页表项 (PTE) 修改逻辑
+│       │   │   │   └── pte.h           # PTE 操作接口
+│       │   │   ├── hook/               # SLAT 钩子机制
+│       │   │   │   ├── hook.cpp        # 钩子安装与管理核心
+│       │   │   │   ├── hook.h          # 接口: slat::hook::install
+│       │   │   │   ├── hook_entry.cpp  # 钩子入口管理实现
+│       │   │   │   └── hook_entry.h    # 钩子入口接口
+│       │   │   ├── violation/          # SLAT 违例处理
+│       │   │   │   ├── violation.cpp   # 违例处理主逻辑
+│       │   │   │   └── violation.h     # 接口: slat::violation::handler
+│       │   │   ├── slat.cpp            # SLAT 初始化与核心翻译逻辑
+│       │   │   ├── slat.h              # 接口: slat::set_up, slat::hide_physical_page
+│       │   │   └── slat_def.h          # SLAT 相关结构与常量定义
+│       │   └── structures/
+│       │       └── virtual_address.h
+│       └── runtime/                    # 运行时分发与核心逻辑调度 (持有状态)
+│           ├── dispatch/               # VMExit 具体分发处理逻辑
+│           │   ├── hypercall_exit.cpp  # Hypercall 处理
+│           │   ├── hypercall_exit.h
+│           │   ├── injection_exit.cpp  # 注入状态机与劫持逻辑
+│           │   ├── injection_exit.cpp.bak
+│           │   ├── injection_exit.h
+│           │   ├── initialization_exit.cpp # 首次运行初始化与清理
+│           │   └── initialization_exit.h
+│           ├── payload_validation.cpp  # Payload 合法性校验实现
+│           ├── payload_validation.h    # 校验接口
+│           ├── runtime_context.cpp     # 全局运行上下文定义 (中央状态库)
+│           ├── runtime_context.h       # 接口: g_runtime_context
+│           ├── vmexit_dispatch.cpp     # VMExit 事件核心分发路由
+│           └── vmexit_dispatch.h       # 分发器接口
 ├── uefi-boot/                          # UEFI 引导程序 (劫持 bootmgfw)
 │   ├── src/
 │   │   ├── bootmgfw/                   # 原始引导管理器劫持与还原
@@ -122,18 +135,45 @@ Hyper-V Project Detailed Architecture Map
 │   │   │   └── winload.h
 │   │   └── main.c                      # UEFI 入口与初始化流程
 │   └── ext/                            # 引导程序依赖项 (EDK2, OpenSSL, ia32-doc)
+├── usermode/
+│   ├── ext/
+│   │   ├── CLI11/
+│   │   └── zydis/
+│   └── src/
+│       ├── commands/
+│       │   ├── commands.cpp
+│       │   └── commands.h
+│       ├── hook/
+│       │   ├── hook.cpp
+│       │   ├── hook.h
+│       │   ├── hook_disassembly.cpp
+│       │   ├── hook_disassembly.h
+│       │   ├── kernel_detour_holder.cpp
+│       │   └── kernel_detour_holder.h
+│       ├── hypercall/
+│       │   ├── hypercall.cpp
+│       │   ├── hypercall.h
+│       │   └── vmexit.asm
+│       ├── system/
+│       │   ├── system.cpp
+│       │   ├── system.h
+│       │   └── system_def.h
+│       └── main.cpp
 ├── shared/                             # Guest 与 Host 共享的接口定义
 │   ├── hypercall/                      # Hypercall 定义
 │   │   └── hypercall_def.h
 │   ├── payload/                        # Payload 二进制数据
+│   │   ├── payload_bin.cpp
 │   │   └── payload_bin.h
 │   └── structures/                     # 共享数据结构
 │       ├── memory_operation.h
 │       └── trap_frame.h
 ├── images/                             # 架构逻辑说明图片 (SLAT violation, boot process)
+│   ├── amd_slat_violation.png
+│   ├── boot_process.png
+│   └── intel_slat_violation.png
 ├── scripts/                            # 自动化脚本
-│   └── generate_payload_header.ps1     # 自动生成 payload_bin.h 脚本
-├── _internal_build.cmd                 # 自动化构建脚本
-├── hyper-reV.sln                       # 项目解决方案
+│   ├── generate_payload_header.ps1     # 自动生成 payload_bin.h 脚本
+│   └── parse_pe.py
 ├── load-hyper-reV.bat                  # 驱动加载脚本
 └── map.txt                             # 项目详细架构地图 (当前文件)

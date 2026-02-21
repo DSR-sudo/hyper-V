@@ -183,6 +183,187 @@ std::uint64_t slat::hook::add(slat::context_t* ctx, const virtual_address_t targ
 	return 1;
 }
 
+std::uint64_t slat::hook::hide_payload_memory(slat::context_t* ctx, const virtual_address_t target_guest_physical_address)
+{
+	ctx->hook_mutex.lock();
+
+	process_first_slat_hook(ctx);
+
+	const entry_t* const already_present = entry_t::find(ctx, target_guest_physical_address.address >> 12);
+
+	if (already_present != nullptr)
+	{
+		ctx->hook_mutex.release();
+
+		return 0;
+	}
+
+	std::uint8_t paging_split_state = 0;
+	slat_pte* const target_pte = get_pte(hyperv_cr3(ctx), target_guest_physical_address, ctx->heap_ctx, 1, &paging_split_state);
+	slat_pte* const hook_target_pte = get_pte(hook_cr3(ctx), target_guest_physical_address, ctx->heap_ctx, 1);
+
+	if (target_pte == nullptr || hook_target_pte == nullptr)
+	{
+		ctx->hook_mutex.release();
+
+		return 0;
+	}
+
+	entry_t* const hook_entry = ctx->available_hook_list_head;
+
+	if (hook_entry == nullptr)
+	{
+		ctx->hook_mutex.release();
+
+		return 0;
+	}
+
+	ctx->available_hook_list_head = hook_entry->next();
+	hook_entry->set_next(ctx->used_hook_list_head);
+	hook_entry->set_original_pfn(target_pte->page_frame_number);
+	hook_entry->set_paging_split_state(paging_split_state);
+	ctx->used_hook_list_head = hook_entry;
+
+	hook_entry->set_original_read_access(target_pte->read_access);
+	hook_entry->set_original_write_access(target_pte->write_access);
+	hook_entry->set_original_execute_access(target_pte->execute_access);
+
+	// 【核心逻辑】：Primary EPT 指向真实内存，但仅允许执行 (R=0, 触发读取拦截)
+	target_pte->execute_access = 1;
+	target_pte->read_access = 0;
+	target_pte->write_access = 0;
+
+	// 【核心逻辑】：Secondary EPT 指向全 0 伪页，仅允许读取 (ACE 扫描时拿到的数据)
+	hook_target_pte->page_frame_number = ctx->dummy_page_pfn.load(std::memory_order_acquire);
+	hook_target_pte->execute_access = 0;
+	hook_target_pte->read_access = 1;
+	hook_target_pte->write_access = 0;
+
+	ctx->hook_mutex.release();
+
+	flush_current_logical_processor_cache();
+
+	return 1;
+}
+
+/**
+ * @description 添加 SLAT Hook 条目并建立影子页映射（直接使用宿主物理地址）。
+ * @param {slat::context_t*} ctx SLAT 上下文。
+ * @param {const virtual_address_t} target_guest_physical_address 目标来宾物理地址。
+ * @param {const std::uint64_t} shadow_host_physical_address 影子宿主物理地址。
+ * @return {std::uint64_t} 是否添加成功。
+ * @throws {无} 不抛出异常。
+ * @example
+ * const auto ok = slat::hook::add_by_host_physical(ctx, target_gpa, shadow_hpa);
+ */
+std::uint64_t slat::hook::add_by_host_physical(slat::context_t* ctx, const virtual_address_t target_guest_physical_address, const std::uint64_t shadow_host_physical_address)
+{
+	// 业务说明：加锁确保 Hook 条目修改的并发安全。
+	// 输入：ctx/目标/影子地址；输出：Hook 安装结果；规则：失败返回 0；异常：不抛出。
+	ctx->hook_mutex.lock();
+
+	process_first_slat_hook(ctx);
+
+	const entry_t* const already_present_hook_entry = entry_t::find(ctx, target_guest_physical_address.address >> 12);
+
+	if (already_present_hook_entry != nullptr)
+	{
+		ctx->hook_mutex.release();
+
+		return 0;
+	}
+
+	std::uint8_t paging_split_state = 0;
+
+	// 业务说明：获取目标页的 Hyper-V 与 Hook PTE，确定拆分页状态。
+	// 输入：目标地址；输出：PTE 指针与拆分状态；规则：找不到返回失败；异常：不抛出。
+	slat_pte* const target_pte = get_pte(hyperv_cr3(ctx), target_guest_physical_address, ctx->heap_ctx, 1, &paging_split_state);
+
+	if (target_pte == nullptr)
+	{
+		ctx->hook_mutex.release();
+
+		return 0;
+	}
+
+	slat_pte* const hook_target_pte = get_pte(hook_cr3(ctx), target_guest_physical_address, ctx->heap_ctx, 1);
+
+	if (hook_target_pte == nullptr)
+	{
+		ctx->hook_mutex.release();
+
+		return 0;
+	}
+
+	if (paging_split_state == 0)
+	{
+		// 业务说明：复用同 2MB 范围的拆分页状态，避免重复拆分。
+		// 输入：目标 PFN；输出：paging_split_state；规则：已有条目则继承；异常：不抛出。
+		const entry_t* const similar_space_hook_entry = entry_t::find_in_2mb_range(ctx, target_guest_physical_address.address >> 12);
+
+		if (similar_space_hook_entry != nullptr)
+		{
+			paging_split_state = static_cast<std::uint8_t>(similar_space_hook_entry->paging_split_state());
+		}
+	}
+
+	// 业务说明：直接使用传入的影子页宿主物理地址。
+	// 输入：shadow_host_physical_address；输出：宿主物理地址；规则：无转换；异常：不抛出。
+	const std::uint64_t shadow_page_host_physical_address = shadow_host_physical_address;
+
+
+	if (shadow_page_host_physical_address == 0)
+	{
+		ctx->hook_mutex.release();
+
+		return 0;
+	}
+
+	// 业务说明：从空闲链表中分配一个 Hook 条目。
+	// 输入：无；输出：hook_entry；规则：为空则失败；异常：不抛出。
+	entry_t* const hook_entry = ctx->available_hook_list_head;
+
+	if (hook_entry == nullptr)
+	{
+		ctx->hook_mutex.release();
+
+		return 0;
+	}
+
+	ctx->available_hook_list_head = hook_entry->next();
+
+	// 业务说明：填充 Hook 条目并插入已用链表。
+	// 输入：hook_entry；输出：链表更新；规则：头插入；异常：不抛出。
+	hook_entry->set_next(ctx->used_hook_list_head);
+	hook_entry->set_original_pfn(target_pte->page_frame_number);
+	hook_entry->set_paging_split_state(paging_split_state);
+
+	ctx->used_hook_list_head = hook_entry;
+
+	// 业务说明：Intel 平台保存原访问权限并配置影子页映射与权限切换。
+	// 输入：target_pte/hook_target_pte；输出：PTE 权限更新；规则：目标页仅可执行；异常：不抛出。
+	hook_entry->set_original_read_access(target_pte->read_access);
+	hook_entry->set_original_write_access(target_pte->write_access);
+	hook_entry->set_original_execute_access(target_pte->execute_access);
+
+	target_pte->page_frame_number = shadow_page_host_physical_address >> 12;
+	target_pte->execute_access = 1;
+	target_pte->read_access = 0;
+	target_pte->write_access = 0;
+
+	hook_target_pte->execute_access = 0;
+	hook_target_pte->read_access = 1;
+	hook_target_pte->write_access = 1;
+
+	ctx->hook_mutex.release();
+
+	// 业务说明：仅刷新当前核心缓存，避免全核 NMI 导致超时。
+	// 输入：无；输出：TLB/EPT 刷新；规则：仅当前核心；异常：不抛出。
+	flush_current_logical_processor_cache();
+
+	return 1;
+}
+
 /**
  * @description 判断 Hook 是否需要合并 2MB 页表。
  * @param {slat::context_t*} ctx SLAT 上下文。

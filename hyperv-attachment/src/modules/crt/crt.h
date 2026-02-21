@@ -17,6 +17,17 @@ namespace crt
 	std::uint64_t string_length(const char* string);
 
 	/**
+	 * @description 比较两个字符串是否相等。
+	 * @param {const char*} s1 第一个字符串。
+	 * @param {const char*} s2 第二个字符串。
+	 * @return {bool} 如果相等返回 true，否则返回 false。
+	 * @throws {无} 不抛出异常。
+	 * @example
+	 * if (crt::string_compare("test", "test")) { ... }
+	 */
+	bool string_compare(const char* s1, const char* s2);
+
+	/**
 	 * @description 获取两个值中的较小值。
 	 * @param {const T} a 第一个值。
 	 * @param {const T} b 第二个值。

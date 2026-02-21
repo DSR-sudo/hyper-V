@@ -15,6 +15,7 @@
 namespace loader {
 
 struct section_info_t {
+    char     name[9];
     uint32_t virtual_address;
     uint32_t virtual_size;
     uint32_t raw_size;

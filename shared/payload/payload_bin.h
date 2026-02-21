@@ -10,7 +10,7 @@
 
 namespace payload {
 
-// rwbase payload - Size: 13824 bytes
+// rwbase payload - Size: 16384 bytes
 extern const unsigned char rwbase_image[];
 extern const size_t rwbase_image_size;
 

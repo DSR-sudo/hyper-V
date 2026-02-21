@@ -576,6 +576,33 @@ std::unordered_map<std::string, std::uint64_t> form_aliases()
 	return aliases;
 }
 
+CLI::App* init_asph(CLI::App& app, CLI::Transformer& aliases_transformer)
+{
+	CLI::App* asph = app.add_subcommand("asph", "va + cr3 add slat patch hook: patches a byte at target_virtual_address + 4 from 0x48 to 0x3c")->ignore_case();
+
+	add_transformed_command_option(asph, "virtual_address", aliases_transformer)->required();
+	add_transformed_command_option(asph, "cr3", aliases_transformer)->required();
+
+	return asph;
+}
+
+void process_asph(CLI::App* asph)
+{
+	const std::uint64_t virtual_address = get_command_option<std::uint64_t>(asph, "virtual_address");
+	const std::uint64_t cr3 = get_command_option<std::uint64_t>(asph, "cr3");
+
+	const std::uint64_t status = hypercall::add_slat_patch_hook(virtual_address, cr3);
+
+	if (status == 1)
+	{
+		std::println("success in adding slat patch hook");
+	}
+	else
+	{
+		std::println("failed to add slat patch hook");
+	}
+}
+
 void commands::process(const std::string command)
 {
 	if (command.empty() == true)
@@ -611,6 +638,7 @@ void commands::process(const std::string command)
 	CLI::App* lkm = init_lkm(app);
 	CLI::App* kme = init_kme(app);
 	CLI::App* dkm = init_dkm(app);
+	CLI::App* asph = init_asph(app, aliases_transformer);
 
 	try
 	{
@@ -633,6 +661,7 @@ void commands::process(const std::string command)
 		d_process_command(lkm);
 		d_process_command(kme);
 		d_process_command(dkm);
+		d_process_command(asph);
 	}
 	catch (const CLI::ParseError& error)
 	{
